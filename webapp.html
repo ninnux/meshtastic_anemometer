@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>Wind Sensor</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0a1628;
+      color: #fff;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    h1 {
+      text-align: center;
+      font-size: 1.3em;
+      font-weight: 500;
+      color: #7eb8f7;
+      margin-bottom: 24px;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    button {
+      flex: 1;
+      padding: 14px;
+      border: none;
+      border-radius: 12px;
+      font-size: 1em;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    #btnConnect { background: #1a56db; color: white; }
+    #btnConnect:disabled { background: #334; color: #888; }
+    #btnDisconnect { background: #7f1d1d; color: #fca5a5; display: none; }
+
+    #status {
+      text-align: center;
+      font-size: 0.85em;
+      color: #667;
+      margin-bottom: 28px;
+    }
+    #status.ok  { color: #4ade80; }
+    #status.err { color: #f87171; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .card {
+      background: #111f3a;
+      border-radius: 16px;
+      padding: 18px 14px 14px;
+      text-align: center;
+      border: 1px solid #1e3a5f;
+    }
+
+    .card-label {
+      font-size: 0.72em;
+      color: #4a7ab5;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 10px;
+    }
+
+    .card-value {
+      font-size: 2.4em;
+      font-weight: 600;
+      color: #e8f4ff;
+      line-height: 1;
+    }
+
+    .card-unit {
+      font-size: 0.75em;
+      color: #4a7ab5;
+      margin-top: 6px;
+    }
+
+    #rawData {
+      background: #0d1a2e;
+      border: 1px solid #1e3a5f;
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 0.85em;
+      color: #7eb8f7;
+      word-break: break-all;
+      margin-bottom: 12px;
+      min-height: 40px;
+    }
+
+    #lastUpdate {
+      text-align: center;
+      font-size: 0.75em;
+      color: #334;
+      margin-top: 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>&#127811; Wind Sensor</h1>
+
+  <div class="btn-row">
+    <button id="btnConnect">Connetti</button>
+    <button id="btnDisconnect">Disconnetti</button>
+  </div>
+  <p id="status">Non connesso</p>
+
+  <div id="rawData">In attesa di dati...</div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-label">Velocità</div>
+      <div class="card-value" id="speed">--</div>
+      <div class="card-unit">nodi</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Media</div>
+      <div class="card-value" id="mean">--</div>
+      <div class="card-unit">nodi</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Massima</div>
+      <div class="card-value" id="max">--</div>
+      <div class="card-unit">nodi</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Direzione</div>
+      <div class="card-value" id="dirDeg">--</div>
+      <div class="card-unit" id="dirComp"></div>
+    </div>
+  </div>
+
+  <p id="lastUpdate"></p>
+
+  <script>
+    const SERVICE = "a0010000-0001-0001-0001-000000000001";
+    const CHAR    = "a0010000-0001-0001-0001-000000000002";
+
+    const btnConnect    = document.getElementById("btnConnect");
+    const btnDisconnect = document.getElementById("btnDisconnect");
+    const statusEl      = document.getElementById("status");
+    const rawDataEl     = document.getElementById("rawData");
+    const speedEl       = document.getElementById("speed");
+    const meanEl        = document.getElementById("mean");
+    const maxEl         = document.getElementById("max");
+    const dirDegEl      = document.getElementById("dirDeg");
+    const dirCompEl     = document.getElementById("dirComp");
+    const lastUpEl      = document.getElementById("lastUpdate");
+
+    let gattServer = null;
+    let bleChar    = null;
+    let pollTimer  = null;
+
+    function parseAndUpdate(str) {
+      rawDataEl.textContent = str;
+
+      const s = str.match(/S:([\d.]+)/);
+      const m = str.match(/M:([\d.]+)/);
+      const x = str.match(/X:([\d.]+)/);
+      const d = str.match(/D:(\d+)/);
+      const c = str.match(/D:\d+\s+(\w+)/);
+
+      if (s) speedEl.textContent   = parseFloat(s[1]).toFixed(1);
+      if (m) meanEl.textContent    = parseFloat(m[1]).toFixed(1);
+      if (x) maxEl.textContent     = parseFloat(x[1]).toFixed(1);
+      if (d) dirDegEl.textContent  = parseInt(d[1]) + "°";
+      if (c) dirCompEl.textContent = c[1];
+
+      const now = new Date();
+      lastUpEl.textContent = "Aggiornato: " +
+        now.getHours()  .toString().padStart(2, "0") + ":" +
+        now.getMinutes().toString().padStart(2, "0") + ":" +
+        now.getSeconds().toString().padStart(2, "0");
+    }
+
+    async function pollRead() {
+      if (!bleChar) return;
+      try {
+        const val = await bleChar.readValue();
+        parseAndUpdate(new TextDecoder().decode(val));
+      } catch(e) {
+        // connessione caduta, il timer verrà fermato da setDisconnected
+      }
+    }
+
+    function setConnected(device) {
+      statusEl.textContent = "Connesso a " + device.name;
+      statusEl.className = "ok";
+      btnConnect.disabled = true;
+      btnDisconnect.style.display = "block";
+      pollTimer = setInterval(pollRead, 1000);
+    }
+
+    function setDisconnected() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      statusEl.textContent = "Disconnesso";
+      statusEl.className = "err";
+      btnConnect.disabled = false;
+      btnConnect.textContent = "Riconnetti";
+      btnDisconnect.style.display = "none";
+      gattServer = null;
+      bleChar    = null;
+    }
+
+    btnConnect.addEventListener("click", async () => {
+      try {
+        btnConnect.disabled = true;
+        statusEl.textContent = "Ricerca in corso...";
+        statusEl.className = "";
+
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: "WindSensor" }],
+          optionalServices: [SERVICE]
+        });
+
+        statusEl.textContent = "Connessione...";
+        device.addEventListener("gattserverdisconnected", setDisconnected);
+
+        gattServer    = await device.gatt.connect();
+        const service = await gattServer.getPrimaryService(SERVICE);
+        bleChar       = await service.getCharacteristic(CHAR);
+
+        const val = await bleChar.readValue();
+        parseAndUpdate(new TextDecoder().decode(val));
+
+        setConnected(device);
+
+      } catch (err) {
+        statusEl.textContent = "Errore: " + err.message;
+        statusEl.className = "err";
+        btnConnect.disabled = false;
+      }
+    });
+
+    btnDisconnect.addEventListener("click", () => {
+      if (gattServer && gattServer.connected) {
+        gattServer.disconnect();
+      }
+      setDisconnected();
+    });
+  </script>
+</body>
+</html>
