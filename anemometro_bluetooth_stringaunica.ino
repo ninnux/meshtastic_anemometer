@@ -22,6 +22,7 @@
 #define SERIAL_RX_PIN  7
 #define SERIAL_TX_PIN  6
 #define BAUD_RATE      38400
+#define NODE_NAME      "first_anemometer"
 
 // ── BLE ──────────────────────────────────────────────────────
 BLEService        windService("A0010000-0001-0001-0001-000000000001");
@@ -155,10 +156,10 @@ void loop() {
 
   // ── Meshtastic ogni 15s ───────────────────────────────────
   if (IsMeshtasticRequired) {
-    char buf[96];
+    char buf[128];
     snprintf(buf, sizeof(buf),
-             "Last:%.1f Mean:%.1f Max:%.1f kn Dir:%d %s",
-             WindSpeed, WindSpeedMean, WindSpeedMax,
+             "Name:%s Last:%.1f Mean:%.1f Max:%.1f kn Dir:%d %s",
+             NODE_NAME,WindSpeed, WindSpeedMean, WindSpeedMax,
              windCalDirection, windCompassDirection);
     mt_send_text(buf, DEST_NODE, 0);
     IsMeshtasticRequired = false;
