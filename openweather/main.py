@@ -3,122 +3,118 @@ import pandas as pd
 import numpy as np
 import time
 import joblib
-from sklearn.ensemble import RandomForestClassifier
-from datetime import datetime, timedelta
-import sys
 import os
 from dotenv import load_dotenv
+from sklearn.ensemble import RandomForestClassifier
+from datetime import datetime, timedelta
 
-
-# --- CARICAMENTO CONFIGURAZIONE ESTERNA ---
-load_dotenv() # Carica le variabili dal file .env
+# --- CARICAMENTO CONFIGURAZIONE ---
+load_dotenv()
 API_KEY = os.getenv("OPENWEATHER_API_KEY")
-# --- CONFIGURAZIONE ---
-LAT = "42.1556597"  # Le coordinate del tuo spot
+LAT = "42.1556597"
 LON = "12.2461345"
 MODEL_FILE = "wing_owm_model.pkl"
 
-# --- 1. DOWNLOAD DATI STORICI (Ricalibrato per 24 ore/giorno) ---
-def get_historical_data(days=1):
-    print(f"Scaricamento dati storici per gli ultimi {days} giorni (24 letture al giorno)...")
+# --- 1. DOWNLOAD DATI STORICI ---
+def get_historical_data(days=30):
+    print(f"Scaricamento dati ({days}gg, 24h/gg) con campi: Vento, Gust, UV, Pressione, Temp...")
     all_data = []
-    
-    # Calcoliamo la fine del periodo (ieri a mezzanotte)
     base_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     
     for d in range(1, days + 1):
         target_day = base_date - timedelta(days=d)
-        print(f"Recupero dati del: {target_day.strftime('%d-%m-%Y')}")
+        print(f"Recupero: {target_day.strftime('%d-%m-%Y')}...", end="\r")
         
-        # Facciamo una richiesta per ogni ora del giorno
         for h in range(0, 24):
-            # Timestamp preciso per ogni ora
             ts = int((target_day + timedelta(hours=h)).timestamp())
-            
             url = f"https://api.openweathermap.org/data/3.0/onecall/timemachine?lat={LAT}&lon={LON}&dt={ts}&appid={API_KEY}&units=metric"
             
             try:
                 response = requests.get(url)
-                # Se superi i limiti free (1000 chiamate/giorno), qui riceverai errore
-                if response.status_code == 429:
-                    print("Limite chiamate raggiunto! Salvo quello che ho preso finora.")
-                    return pd.DataFrame(all_data)
+                if response.status_code == 429: return pd.DataFrame(all_data)
                 
                 data = response.json()
                 if "data" in data and len(data["data"]) > 0:
-                    hour_data = data["data"][0] # Prende la singola ora restituita
+                    h_data = data["data"][0]
+                    
+                    # Estrazione sicura dei campi (wind_gust può mancare)
                     all_data.append({
-                        'time': hour_data['dt'],
-                        'temp': hour_data['temp'],
-                        'pressure': hour_data['pressure'],
-                        'humidity': hour_data['humidity'],
-                        'wind_speed': hour_data['wind_speed'] * 1.94384,
-                        'wind_deg': hour_data['wind_deg'],
-                        'clouds': hour_data['clouds']
+                        'time': h_data['dt'],
+                        'temp': h_data['temp'],
+                        'pressure': h_data['pressure'],
+                        'wind_speed': h_data['wind_speed'] * 1.94384,
+                        'wind_gust': h_data.get('wind_gust', h_data['wind_speed']) * 1.94384,
+                        'wind_deg': h_data['wind_deg'],
+                        'uvi': h_data.get('uvi', 0) # L'indice UV
                     })
-            except Exception as e:
-                print(f"Errore al timestamp {ts}: {e}")
-                continue
-                
+            except Exception: continue
+            
+    print("\nDownload completato.")
     return pd.DataFrame(all_data)
 
-
-
-# --- 2. PREPARAZIONE E TRAINING ---
+# --- 2. TRAINING ---
 def train_owm_model():
-    df = get_historical_data(days=30) # OWM Free ha limiti sui giorni storici
+    df = get_historical_data(days=30)
+    if df.empty: return
+
     df = df.sort_values('time')
-
-    # Definiamo il "Volo OK" (Target attuale)
-    # Usiamo velocità vento > 12 nodi (più alto perché OWM è meno preciso della boa)
-    df['is_good'] = (df['wind_speed'] >= 10).astype(int)
-
-    # SHIFT: Prevediamo tra 3 ore (OpenWeather fornisce dati orari nello storico)
+    # Target: Volo OK se la raffica o la velocità media superano i 10 nodi
+    df['is_good'] = ((df['wind_speed'] >= 10) | (df['wind_gust'] >= 12)).astype(int)
+    
+    # Prevediamo a 3 ore
     df['target_future'] = df['is_good'].shift(-3)
     df.dropna(inplace=True)
 
-    features = ['temp', 'pressure', 'humidity', 'wind_speed', 'wind_deg', 'clouds']
+    # Lista aggiornata delle Feature
+    features = ['wind_speed', 'wind_gust', 'wind_deg', 'pressure', 'temp', 'uvi']
+    
     X = df[features]
     y = df['target_future']
-    print("Distribuzione classi nel training set:")
-    print(df['is_good'].value_counts())
-    
-    if len(df['is_good'].unique()) < 2:
-        print("ATTENZIONE: Il dataset contiene solo una classe. La previsione non sarà affidabile.")
 
-    model = RandomForestClassifier(n_estimators=100)
+    print(f"Training su {len(df)} righe. Distribuzione classi:\n{y.value_counts()}")
+
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
     model.fit(X, y)
     joblib.dump(model, MODEL_FILE)
-    print("Modello OWM addestrato!")
+    print(f"Modello salvato!")
 
-# --- 3. MONITORAGGIO REAL-TIME ---
+# --- 3. MONITORAGGIO ---
 def monitor_and_predict():
+    if not os.path.exists(MODEL_FILE): return
     model = joblib.load(MODEL_FILE)
-    print("Monitoraggio avviato tramite OpenWeather...")
+    features_names = ['wind_speed', 'wind_gust', 'wind_deg', 'pressure', 'temp', 'uvi']
+    
+    print("Monitoraggio attivo...")
 
     while True:
-        # Recupera meteo attuale
-        url = f"https://api.openweathermap.org/data/3.0/onecall?lat={LAT}&lon={LON}&exclude=minutely,hourly,daily,alerts&appid={API_KEY}&units=metric"
-        data = requests.get(url).json()['current']
+        try:
+            url = f"https://api.openweathermap.org/data/3.0/onecall?lat={LAT}&lon={LON}&exclude=minutely,hourly,daily,alerts&appid={API_KEY}&units=metric"
+            r = requests.get(url).json()
+            curr = r['current']
 
-        current_features = pd.DataFrame([{
-            'temp': data['temp'],
-            'pressure': data['pressure'],
-            'humidity': data['humidity'],
-            'wind_speed': data['wind_speed'] * 1.94384,
-            'wind_deg': data['wind_deg'],
-            'clouds': data['clouds']
-        }])
+            # Creazione dataframe per la predizione con i nuovi campi
+            current_df = pd.DataFrame([{
+                'wind_speed': curr['wind_speed'] * 1.94384,
+                'wind_gust': curr.get('wind_gust', curr['wind_speed']) * 1.94384,
+                'wind_deg': curr['wind_deg'],
+                'pressure': curr['pressure'],
+                'temp': curr['temp'],
+                'uvi': curr.get('uvi', 0)
+            }])
 
-        prob = model.predict_proba(current_features)[0][1]
-        print(f"[{datetime.now().strftime('%H:%M')}] Probabilità vento tra 3 ore: {prob*100:.1f}%")
+            probs = model.predict_proba(current_df)[0]
+            prob = probs[1] if len(probs) > 1 else (1.0 if model.classes_[0] == 1 else 0.0)
 
-        if prob > 0.75:
-            print("!!! ALERT: Condizioni in arrivo !!!")
-            # Qui inseriresti l'invio Telegram
+            print(f"[{datetime.now().strftime('%H:%M')}] Vento: {current_df['wind_speed'].iloc[0]:.1f}kt | UV: {current_df['uvi'].iloc[0]} | Prob. tra 3h: {prob*100:.1f}%")
+            
+        except Exception as e:
+            print(f"Errore: {e}")
 
-        time.sleep(600) # Controlla ogni 10 minuti
+        time.sleep(600)
 
 if __name__ == "__main__":
-    #train_owm_model() # Scommenta la prima volta per addestrare
-    monitor_and_predict()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--train":
+        train_owm_model()
+    else:
+        monitor_and_predict()
