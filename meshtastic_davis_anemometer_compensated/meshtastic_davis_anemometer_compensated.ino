@@ -87,6 +87,10 @@ void setup() {
   uint32_t t = millis();
   while (!Serial && (millis() - t) < 3000);
 
+pinMode(24, OUTPUT);
+digitalWrite(24, HIGH);
+delay(10);
+
   Wire.begin();
   mt_serial_init(SERIAL_RX_PIN, SERIAL_TX_PIN, BAUD_RATE);
 
@@ -222,7 +226,7 @@ void setupCompass() {
     cal.zMin =  32767; cal.zMax = -32768;
 
     imuWake();
-    compass.setMode(0x01, 0x02, 0x01, 0x00);
+    compass.setMode(0x01, 0x00, 0x00, 0x00);
     delay(25);
 
     unsigned long tCal = millis();
@@ -241,6 +245,13 @@ void setupCompass() {
       int cx = compass.getX();
       int cy = compass.getY();
       int cz = compass.getZ();
+      Serial.println("Dati da calibrare: ");
+      Serial.print(cx);
+      Serial.print(" ");   
+      Serial.print(cy);
+      Serial.print(" ");
+      Serial.println(cz);
+      
       if (cx < cal.xMin) cal.xMin = cx;
       if (cx > cal.xMax) cal.xMax = cx;
       if (cy < cal.yMin) cal.yMin = cy;
@@ -271,7 +282,7 @@ void updateDeviceHeading() {
   Serial.println("DEBUG HDG: imuWake");
   imuWake();
   Serial.println("DEBUG HDG: setMode");
-  compass.setMode(0x01, 0x02, 0x01, 0x00);
+  compass.setMode(0x01, 0x00, 0x00, 0x00);
 
   // Attendi Data Ready (registro 0x06, bit 0 = DRDY)
   // Timeout 200ms per sicurezza
@@ -318,7 +329,7 @@ void updateDeviceHeading() {
   deviceHeading = heading;
 
   imuSleep();
-  //compass.setMode(0x00, 0x00, 0x00, 0x00);
+  compass.setMode(0x00, 0x00, 0x00, 0x00);
 }
 
 // ============================================================
