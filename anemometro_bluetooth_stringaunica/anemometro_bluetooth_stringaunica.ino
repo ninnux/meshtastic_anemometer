@@ -241,7 +241,8 @@ void isr_timer_cb(TimerHandle_t xTimerID) {
   (void)xTimerID;
   TimerCount++;
 
-  if (TimerCount >= 2) {
+  // campione ogni 2 tick (1 s), Meshtastic ogni 30 tick (15 s)
+  if (TimerCount % 2 == 0) {
     IsSampleRequired    = true;
     IsBLEUpdateRequired = true;
   }
