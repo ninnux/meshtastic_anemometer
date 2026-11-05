@@ -221,6 +221,7 @@ Su InfluxDB il nodo si distingue dal tag `sensor_name`. Se invece compare un alt
 | `anemometro_bluetooth_stringaunica/` | Firmware base: velocità + direzione dalla banderuola, invio Meshtastic + BLE. |
 | `meshtastic_davis_anemometer_compensated/` | Firmware per XIAO nRF52840 **Sense**: aggiunge bussola QMC5883L + IMU LSM6DS3 per compensare la direzione con l'orientamento del dispositivo (tilt-compensated heading). Sperimentale. |
 | `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP ogni 5 minuti su rete cellulare, modem in PSM tra un invio e l'altro, BLE invariato. |
+| `sim7080_serial_bridge/` | Convertitore USB-seriale per provare a mano il modem con i comandi AT. |
 | `collector_coap.py` | Ricevitore CoAP del firmware SIM7080 in Python: scrive su InfluxDB. |
 | `server/` | Lo stesso ricevitore in Go, consigliato per il server, con lo script di deploy per Devuan in `server/deploy/`. |
 | `platformio.ini`, `pio_sketch_dir.py` | Compilazione con PlatformIO, un ambiente per ogni sketch. |
@@ -241,6 +242,7 @@ Con **PlatformIO** (`platformio.ini` nella radice del repository, un ambiente pe
 pio run                        # firmware SIM7080 (ambiente predefinito)
 pio run -e bluetooth           # anemometro_bluetooth_stringaunica
 pio run -e compensated         # meshtastic_davis_anemometer_compensated, per XIAO Sense
+pio run -e bridge              # sim7080_serial_bridge, convertitore per provare il modem
 pio run -e sim7080 -t upload   # compila e carica
 pio device monitor             # monitor seriale a 115200 baud
 ```
@@ -450,9 +452,19 @@ Se su macOS non trova gli header C++, aggiungi `-isysroot $(xcrun --show-sdk-pat
 | **Ora di rete** (`AT+CNTP`) | il modem ottiene l'ora via NTP con la tua SIM | `Sincronizzazione NTP fallita` |
 | **Invio CoAP** (`AT+CCOAPPARA`) | il modem accetta il pacchetto e lo invia | `CoAP non inviato: {...}` |
 
-Il firmware non stampa le risposte AT: `CoAP non inviato` compare anche per altri errori di invio. Per vedere l'`ERROR`, prova i comandi a mano con un terminale collegato alla UART del modem, attraverso un adattatore USB-seriale con il livello logico giusto e con la XIAO scollegata:
+Il firmware non stampa le risposte AT: `CoAP non inviato` compare anche per altri errori di invio. Per vedere l'`ERROR`, prova i comandi a mano usando la XIAO come convertitore. I collegamenti restano gli stessi:
+
+```bash
+pio run -e bridge -t upload
+pio device monitor
+```
+
+Scrivi un comando e premi Invio. `#pwr` dà un impulso su PWRKEY, che accende il modem oppure lo spegne se è già acceso: prova prima `AT`, e usalo solo se non risponde. `#help` mostra l'aiuto. Con il firmware della stazione la XIAO non fa da convertitore, quindi alla fine ricarica `pio run -e sim7080 -t upload`.
+
+Questa è la sequenza da provare:
 
 ```
+AT                                         deve rispondere OK
 AT+CGATT?                                  deve rispondere +CGATT: 1
 AT+CNCFG=0,1,"iot.1nce.net"                con l'APN della tua SIM
 AT+CNACT=0,1                               attendi +APP PDP: 0,ACTIVE
