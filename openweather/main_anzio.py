@@ -107,7 +107,8 @@ def monitor_and_predict():
             probs = model.predict_proba(current_df)[0]
             prob = probs[1] if len(probs) > 1 else (1.0 if model.classes_[0] == 1 else 0.0)
 
-            print(f"[{datetime.now().strftime('%H:%M')}] Vento: {current_df['wind_speed'].iloc[0]:.1f}kt | UV: {current_df['uvi'].iloc[0]} | Prob. tra 3h: {prob*100:.1f}%")
+            #print(f"[{datetime.now().strftime('%H:%M')}] Vento: {current_df['wind_speed'].iloc[0]:.1f}kt | UV: {current_df['uvi'].iloc[0]} | Prob. tra 3h: {prob*100:.1f}%")
+            print(f"[{datetime.now().strftime('%H:%M')}] Pressure: {current_df['pressure'].iloc[0]:.1f} | Temp: {current_df['temp'].iloc[0]:.1f}gradi | Vento: {current_df['wind_speed'].iloc[0]:.1f}kt | UV: {current_df['uvi'].iloc[0]} | Prob. tra 3h: {prob*100:.1f}%")
             
         except Exception as e:
             print(f"Errore: {e}")
