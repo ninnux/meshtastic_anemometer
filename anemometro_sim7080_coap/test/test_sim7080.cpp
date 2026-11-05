@@ -25,6 +25,10 @@ public:
   int attachAfterPolls = 0;
   bool pdpActive = false;
   bool apnStored = false;
+  std::string storedPsm;
+  bool psmSupported = true;
+  bool inPsm = false;
+  bool keepsContextInPsm = true;
   bool answersPowerOff = true;
   bool coapOk = true;
   int actionError = 0;
@@ -43,7 +47,17 @@ public:
     for (size_t i = 0; i < len; i++) onByte(data[i]);
     return len;
   }
+  void enterPsm() {
+    inPsm = true;
+    rx.clear();
+    if (!keepsContextInPsm) pdpActive = false;
+  }
   void togglePower() {
+    if (inPsm) {  // l'impulso risveglia, non spegne
+      inPsm = false;
+      bootAt = fakeMillis + 1000;
+      return;
+    }
     powered = !powered;
     pdpActive = false;
     rx.clear();
@@ -69,7 +83,7 @@ private:
     if (b != '\r') { cmd += (char)b; return; }
     std::string c = cmd;
     cmd.clear();
-    if (!powered || fakeMillis < bootAt) return;
+    if (!powered || inPsm || fakeMillis < bootAt) return;
     commands.push_back(c);
     rx += urcBeforeReply;
     reply(c);
@@ -86,6 +100,17 @@ private:
     } else if (c.rfind("AT+CGDCONT=", 0) == 0) {
       apnStored = true;
       rx += "\r\nOK\r\n";
+    } else if (c == "AT+CPSMS?") {
+      rx += "\r\n+CPSMS: " + (storedPsm.empty() ? std::string("0,,,\"01100000\",\"00000000\"") : storedPsm) + "\r\n\r\nOK\r\n";
+    } else if (c.rfind("AT+CPSMS=", 0) == 0) {
+      if (psmSupported) {
+        storedPsm = c.substr(strlen("AT+CPSMS="));
+        rx += "\r\nOK\r\n";
+      } else {
+        rx += "\r\nERROR\r\n";
+      }
+    } else if (c == "AT+CPSMRDP") {
+      rx += "\r\n+CPSMRDP: 1,30,7200,30,7200,0\r\n\r\nOK\r\n";
     } else if (c == "AT+CNACT?") {
       // Il manuale riporta questa risposta sia con sia senza spazio
       rx += pdpActive ? "\r\n+CNACT:0,1,\"10.0.0.2\"\r\n" : "\r\n+CNACT:0,0,\"0.0.0.0\"\r\n";
@@ -333,6 +358,96 @@ static void testPowerOffWhenAlreadyOffNotPulsed() {
   CHECK(!m.powered);
 }
 
+static const char* PSM_CMD = "AT+CPSMS=1,,,\"00100010\",\"00001111\"";
+
+static void testPsmRequestedOnce() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count(PSM_CMD) == 1);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CPSMS=") == 1);  // gia' salvato: riscriverlo forzerebbe un nuovo TAU
+}
+
+static void testPsmRefusedStillConnects() {
+  FakeModem m; reset(m);
+  m.psmSupported = false;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+}
+
+static void testStandbyDoesNotPowerOff() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  modem.standby();
+  CHECK(!modem.connected());
+  CHECK(m.powered);
+  CHECK(m.count("AT+CPOWD") == 0);
+  CHECK(pwrkeyPulses == 0);
+}
+
+static void testWakeFromPsmKeepsContext() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  modem.standby();
+  m.enterPsm();
+  m.commands.clear();
+
+  uint32_t start = fakeMillis;
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(!m.inPsm);
+  CHECK(m.powered);
+  CHECK(pwrkeyPulses == 1);
+  CHECK(fakeMillis - start < 5000);
+  CHECK(m.count("AT+CFUN") == 0);
+  CHECK(m.count("AT+CPSMS=") == 0);
+  CHECK(m.count("AT+CNACT=0,1") == 0);
+  CHECK(m.count("AT+CCOAPINIT") == 1);
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+}
+
+// Il manuale non dice se la PDP sopravvive al PSM: va gestito anche il caso peggiore
+static void testWakeFromPsmLosesContext() {
+  FakeModem m; reset(m);
+  m.keepsContextInPsm = false;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  modem.standby();
+  m.enterPsm();
+  m.commands.clear();
+
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CNACT=0,1") == 1);
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+}
+
+// Risvegliato da solo per il TAU, risponde: un impulso lo spegnerebbe
+static void testStandbyNotYetInPsmNotPulsed() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  modem.standby();
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(pwrkeyPulses == 0);
+  CHECK(m.powered);
+}
+
+// Il modem si addormenta mentre lo si crede attivo: l'invio fallisce e si riprende
+static void testPsmWhileConnectedRecovers() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  m.enterPsm();
+  CHECK(!modem.coapPost(1, "wind", 50, PAYLOAD, false));
+  CHECK(!modem.connected());
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(modem.coapPost(2, "wind", 50, PAYLOAD, false));
+  CHECK(pwrkeyPulses == 1);
+}
+
 static void testPolicy() {
   const uint32_t MIN = 60000;
   ModemPowerPolicy p(3.0f, 10 * MIN, 30 * MIN);
@@ -385,6 +500,13 @@ int main() {
   testPowerOffThenOnAgain();
   testPowerOffFallsBackToPwrkey();
   testPowerOffWhenAlreadyOffNotPulsed();
+  testPsmRequestedOnce();
+  testPsmRefusedStillConnects();
+  testStandbyDoesNotPowerOff();
+  testWakeFromPsmKeepsContext();
+  testWakeFromPsmLosesContext();
+  testStandbyNotYetInPsmNotPulsed();
+  testPsmWhileConnectedRecovers();
   testPolicy();
   testPolicyMillisWrap();
   printf(failures ? "%d test falliti\n" : "tutti i test superati\n", failures);

@@ -14,6 +14,13 @@
 
 #define COAP_CODE_POST     2
 
+// Valori richiesti alla rete, che puo' assegnarne altri (vedi AT+CPSMRDP).
+// Codifica in 3GPP TS 24.008: 3 bit di unita' + 5 bit di valore.
+// L'active time deve superare i 10 s tra due report, altrimenti il modem
+// si addormenterebbe mentre c'e' vento.
+#define PSM_PERIODIC_TAU   "00100010"  // unita' 1 h x 2 = 2 ore
+#define PSM_ACTIVE_TIME    "00001111"  // unita' 2 s x 15 = 30 s
+
 Sim7080::Sim7080(Stream& at, uint8_t pwrkeyPin, uint8_t pwrkeyActive)
   : _at(at), _pwrkeyPin(pwrkeyPin), _pwrkeyActive(pwrkeyActive) {}
 
@@ -126,6 +133,11 @@ void Sim7080::pulsePwrkey() {
   else                      digitalWrite(_pwrkeyPin, LOW);
 }
 
+void Sim7080::standby() {
+  _connected = false;
+  Serial.println("SIM7080: in standby, entrera' in PSM");
+}
+
 void Sim7080::powerOff() {
   sendCmd("AT+CPOWD=1");
   // Se non risponde e' gia' spento oppure bloccato: un impulso potrebbe
@@ -138,6 +150,16 @@ void Sim7080::powerOff() {
 }
 
 // ── Rete ─────────────────────────────────────────────────────
+// Non e' un errore bloccante: senza PSM il modem funziona, consumando di piu'
+void Sim7080::configurePsm() {
+  char cmd[64];
+  snprintf(cmd, sizeof(cmd), "+CPSMS: 1,,,\"%s\",\"%s\"", PSM_PERIODIC_TAU, PSM_ACTIVE_TIME);
+  if (query("AT+CPSMS?", cmd)) return;
+
+  snprintf(cmd, sizeof(cmd), "AT+CPSMS=1,,,\"%s\",\"%s\"", PSM_PERIODIC_TAU, PSM_ACTIVE_TIME);
+  if (!command(cmd)) Serial.println("SIM7080: configurazione PSM fallita");
+}
+
 bool Sim7080::configureApn(const char* apn) {
   char cmd[96];
   // L'APN resta salvato nel modem: riscriverlo a ogni accensione
@@ -192,6 +214,7 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
     }
   }
   command("ATE0");
+  configurePsm();
 
   if (!configureApn(apn)) {
     Serial.println("SIM7080: configurazione APN fallita");
@@ -218,6 +241,9 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
     Serial.println("SIM7080: inizializzazione CoAP fallita");
     return false;
   }
+
+  // Il quarto valore e' l'active time assegnato dalla rete: 0 = PSM non supportato
+  if (query("AT+CPSMRDP", "+CPSMRDP:")) Serial.println(_line);
 
   Serial.println("SIM7080: connesso");
   _connected = true;

@@ -35,14 +35,14 @@
 // ── Gestione connessione ─────────────────────────────────────
 #define LINK_CHECK_EVERY       6       // report tra due controlli della PDP (1 min)
 #define CONNECT_RETRY_MS       30000UL
-#define CONNECT_FAILS_TO_RESET 3       // tentativi falliti prima di spegnere il modem
+#define CONNECT_FAILS_TO_RESET 3       // errori prima di spegnere e riaccendere il modem
 #define MODEM_OFF_WAIT_MS      5000UL
 
 // ── Risparmio energetico ─────────────────────────────────────
-// Accendere e registrare il modem richiede piu' dei 10 s tra due invii:
-// si spegne solo nei periodi di calma, non tra un messaggio e l'altro.
+// Con vento il modem resta attivo per inviare ogni 10 s. Nella calma non viene
+// piu' usato: resta registrato in rete ed entra da solo in PSM (AT+CPSMS).
 #define WIND_ACTIVE_KN     3.0f              // sotto questa raffica c'e' calma
-#define CALM_OFF_MS        (10UL * 60000UL)  // calma prima di spegnere il modem
+#define CALM_STANDBY_MS    (10UL * 60000UL)  // calma prima di lasciare il modem in PSM
 #define HEARTBEAT_MS       (30UL * 60000UL)  // messaggio di presenza durante la calma
 
 // ── BLE ──────────────────────────────────────────────────────
@@ -90,7 +90,7 @@ SemaphoreHandle_t sampleSemaphore;
 QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vince l'ultimo
 
 Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
-ModemPowerPolicy modemPower(WIND_ACTIVE_KN, CALM_OFF_MS, HEARTBEAT_MS);
+ModemPowerPolicy modemPower(WIND_ACTIVE_KN, CALM_STANDBY_MS, HEARTBEAT_MS);
 bool modemSerialOn = false;
 
 // ── Prototipi ────────────────────────────────────────────────
@@ -102,7 +102,7 @@ void queueReport();
 void modemLoop();
 bool sendReport(const WindReport& report);
 bool connectModem();
-void modemPowerOff();
+void closeModemSerial();
 void setupBLE();
 void updateBLE();
 void startAdvertising();
@@ -239,7 +239,10 @@ void modemLoop() {
   modemPower.onReport(report.max, now);
 
   if (!modemPower.modemNeeded(now)) {
-    if (modemSerialOn) modemPowerOff();
+    if (modemSerialOn) {
+      modem.standby();
+      closeModemSerial();
+    }
     return;
   }
 
@@ -255,7 +258,8 @@ void modemLoop() {
   } else if (++failures >= CONNECT_FAILS_TO_RESET) {
     failures = 0;
     modemPower.onHeartbeatDone(millis());  // senza rete, riprova al prossimo turno
-    modemPowerOff();
+    modem.powerOff();
+    closeModemSerial();
     delay(MODEM_OFF_WAIT_MS);
     return;
   } else {
@@ -279,8 +283,7 @@ bool connectModem() {
   return modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT);
 }
 
-void modemPowerOff() {
-  modem.powerOff();
+void closeModemSerial() {
   Serial1.end();  // la UART attiva impedisce alla CPU il sonno piu' profondo
   modemSerialOn = false;
 }

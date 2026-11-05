@@ -1,5 +1,5 @@
 // ============================================================
-// modem_power.h – Decide quando il modem deve restare acceso.
+// modem_power.h – Decide quando il modem deve restare attivo.
 // Nessuna dipendenza da Arduino.
 // ============================================================
 #pragma once

@@ -14,7 +14,7 @@ public:
 
   void begin();
 
-  // Bloccante (fino a qualche minuto): accende il modem se serve,
+  // Bloccante (fino a qualche minuto): accende o risveglia il modem se serve,
   // attende la rete, attiva la PDP e prepara il client CoAP.
   bool connect(const char* apn, const char* host, uint16_t port);
   bool connected() const { return _connected; }
@@ -27,6 +27,11 @@ public:
   // Interroga la PDP: i messaggi NON non segnalano la perdita della rete.
   bool checkLink();
 
+  // Smette di usare il modem, che resta registrato ed entra da solo in PSM
+  // allo scadere dell'active time. Il prossimo connect lo risveglia.
+  void standby();
+
+  // Spegnimento completo, solo per ripartire dopo errori ripetuti.
   void powerOff();
 
 private:
@@ -40,6 +45,7 @@ private:
   bool query(const char* cmd, const char* expected, uint32_t timeoutMs = 2000);
   bool isAlive();
   bool waitAlive(uint32_t timeoutMs);
+  void configurePsm();
   bool configureApn(const char* apn);
   bool waitSimReady(uint32_t timeoutMs);
   bool waitAttach(uint32_t timeoutMs);
