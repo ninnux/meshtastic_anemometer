@@ -18,9 +18,8 @@
 
 #define COAP_CODE_POST     2
 
-// Cat-M e NB-IoT. Di fabbrica un modem puo' avere solo NB-IoT sulla banda 8, con cui
-// in Italia non trova rete: Vodafone NB-IoT usa la banda 20.
-#define NETWORK_MODE       "3"
+// Di fabbrica un modem puo' avere NB-IoT solo sulla banda 8, con cui in Italia
+// non trova rete: Vodafone NB-IoT usa la banda 20.
 #define NB_IOT_BANDS       "3,8,20"
 #define AT_LINE_MAX        559  // limite della riga di comando secondo il manuale
 
@@ -176,7 +175,9 @@ void Sim7080::configurePsm() {
   if (!command(cmd)) Serial.println("SIM7080: configurazione PSM fallita");
 }
 
-bool Sim7080::configureNetwork(const char* apn) {
+bool Sim7080::configureNetwork(const char* apn, const char* networkMode) {
+  char expectedMode[16];
+  snprintf(expectedMode, sizeof(expectedMode), "+CMNB: %s", networkMode);
   char expectedApn[96];
   snprintf(expectedApn, sizeof(expectedApn), "+CGDCONT: 1,\"IP\",\"%s\"", apn);
 
@@ -184,7 +185,7 @@ bool Sim7080::configureNetwork(const char* apn) {
   // allungherebbe la registrazione. Se una lettura non da' OK il modem non e' ancora pronto,
   // e non si puo' dire che i valori siano diversi: si riprova al prossimo avvio.
   const char* const reads[][2] = {
-    {"AT+CMNB?", "+CMNB: " NETWORK_MODE},
+    {"AT+CMNB?", expectedMode},
     {"AT+CBANDCFG?", "+CBANDCFG: \"NB-IOT\"," NB_IOT_BANDS},
     {"AT+CGDCONT?", expectedApn},
   };
@@ -196,11 +197,13 @@ bool Sim7080::configureNetwork(const char* apn) {
   }
   if (!different) return true;
 
+  char writeMode[16];
+  snprintf(writeMode, sizeof(writeMode), "AT+CMNB=%s", networkMode);
   char writeApn[96];
   snprintf(writeApn, sizeof(writeApn), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
   // Alcuni operatori richiedono l'APN gia' in fase di registrazione
   return command("AT+CFUN=0", CFUN_TIMEOUT_MS)
-      && command("AT+CMNB=" NETWORK_MODE)
+      && command(writeMode)
       && command("AT+CBANDCFG=\"NB-IOT\"," NB_IOT_BANDS)
       && command(writeApn)
       && command("AT+CFUN=1", CFUN_TIMEOUT_MS);
@@ -242,7 +245,7 @@ bool Sim7080::activatePdp(const char* apn) {
   return false;
 }
 
-bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
+bool Sim7080::connect(const char* apn, const char* host, uint16_t port, const char* networkMode) {
   _connected = false;
 
   if (!isAlive()) {
@@ -254,7 +257,7 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
   }
   command("ATE0");
 
-  if (!configureNetwork(apn)) {
+  if (!configureNetwork(apn, networkMode)) {
     Serial.println("SIM7080: configurazione rete fallita");
     return false;
   }

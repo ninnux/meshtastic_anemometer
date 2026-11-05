@@ -30,7 +30,7 @@ public:
   bool pdpActive = false;
   bool apnStored = false;
   int bootingCommands = 0;  // appena sveglio: AT e' ok, il resto no
-  std::string networkMode = "2";                 // come il modem di fabbrica provato
+  std::string networkMode = "1";
   std::string nbBands = "8";
   int cnactFailures = 0;
   std::string storedPsm;
@@ -237,7 +237,7 @@ static void testNetworkConfiguredWhenDifferent() {
   FakeModem m; reset(m);
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  CHECK(m.networkMode == "3");
+  CHECK(m.networkMode == "2");
   CHECK(m.nbBands == "3,8,20");
   CHECK(m.count("AT+CFUN=0") == 1);
   CHECK(m.count("AT+CFUN=1") == 1);
@@ -247,11 +247,20 @@ static void testNetworkConfiguredWhenDifferent() {
   CHECK(m.count("AT+CFUN=0") == 1);
 }
 
+// Con copertura NB-IoT assente, lo sketch puo' chiedere anche Cat-M
+static void testNetworkModeChosenBySketch() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683, "3"));
+  CHECK(m.networkMode == "3");
+  CHECK(m.count("AT+CMNB=3") == 1);
+}
+
 // Basta una sola impostazione diversa per scriverle tutte
 static void testOnlyBandsDifferent() {
   FakeModem m; reset(m);
   m.apnStored = true;
-  m.networkMode = "3";
+  m.networkMode = "2";
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
   CHECK(m.nbBands == "3,8,20");
@@ -261,7 +270,7 @@ static void testOnlyBandsDifferent() {
 static void testNothingRewrittenWhileBooting() {
   FakeModem m; reset(m);
   m.apnStored = true;
-  m.networkMode = "3";
+  m.networkMode = "2";
   m.nbBands = "3,8,20";
   m.storedPsm = "1,,,\"00001100\",\"00000001\"";
   m.bootingCommands = 3;
@@ -291,7 +300,7 @@ static void testPdpRetriedUntilActive() {
 static void testPdpGivesUp() {
   FakeModem m; reset(m);
   m.apnStored = true;
-  m.networkMode = "3";
+  m.networkMode = "2";
   m.nbBands = "3,8,20";
   m.cnactFailures = -1;
   Sim7080 modem(m, 1, HIGH);
@@ -325,7 +334,7 @@ static void testRunningModemNotPulsed() {
 static void testStoredApnSkipsCfun() {
   FakeModem m; reset(m);
   m.apnStored = true;
-  m.networkMode = "3";
+  m.networkMode = "2";
   m.nbBands = "3,8,20";
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
@@ -890,6 +899,7 @@ static void testGustUsesMeasuredTime() {
 int main() {
   testColdBootConnectAndPost();
   testNetworkConfiguredWhenDifferent();
+  testNetworkModeChosenBySketch();
   testOnlyBandsDifferent();
   testNothingRewrittenWhileBooting();
   testPdpRetriedUntilActive();

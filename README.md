@@ -73,7 +73,7 @@ In testa ad `anemometro_sim7080_coap/anemometro_sim7080_coap.ino` imposta almeno
 | Define | Cosa inserire |
 |---|---|
 | `NODE_NAME` | Nome **univoco** della stazione: lettere, numeri, `_` e `-`, massimo 32 caratteri |
-| `COAP_SERVER_IP` | Indirizzo del server. Il valore predefinito è un segnaposto |
+| `COAP_SERVER_IP` | Indirizzo del server, se diverso da `anemometro.ninux.org` |
 | `MODEM_APN` | APN della SIM |
 | `MODEM_PWRKEY_ACTIVE` | `HIGH` o `LOW`, secondo la scheda del modem |
 
@@ -177,7 +177,7 @@ In `anemometro_sim7080_coap/anemometro_sim7080_coap.ino` imposta il nome e contr
 #define MODEM_APN        "apn_della_sim"
 ```
 
-`secrets.h` e `NODE_NAME` valgono per una sola stazione alla volta: aggiornali entrambi prima di compilare per un'altra. Non committare `NODE_NAME` e `COAP_SERVER_IP` specifici di una stazione.
+`secrets.h` e `NODE_NAME` valgono per una sola stazione alla volta: aggiornali entrambi prima di compilare per un'altra. Non committare un `NODE_NAME` specifico di una stazione.
 
 **3. Carica il firmware sul nuovo nodo**
 
@@ -402,7 +402,8 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 | Define | Valore attuale | Significato |
 |---|---|---|
 | `MODEM_APN` | `iot.1nce.net` | APN della SIM |
-| `COAP_SERVER_IP` | `192.0.2.1` | **Segnaposto, da sostituire.** IP o hostname del server con `collector_coap.py` |
+| `MODEM_NETWORK_MODE` | `"2"` | `"2"` NB-IoT, `"3"` Cat-M e NB-IoT, `"1"` solo Cat-M |
+| `COAP_SERVER_IP` | `anemometro.ninux.org` | IP o hostname del server con il ricevitore |
 | `COAP_SERVER_PORT` | `5683` | Porta UDP del server |
 | `NTP_SERVER` | `pool.ntp.org` | Server NTP da cui prendere l'ora |
 | `NODE_NAME` | `first_anemometer` | Nome della stazione: lettere, numeri, `_` e `-`, massimo 32 caratteri |
@@ -432,9 +433,11 @@ A ogni invio il firmware:
 Altri dettagli:
 
 - **Valori richiesti alla rete:** active time di 2 s e TAU periodico di 2 ore. La rete può assegnarne altri: il log mostra la riga `+CPSMRDP:`, dove il quarto valore è l'active time assegnato e 0 significa PSM non supportato. In quel caso il modem resta sveglio e funziona comunque.
-- **Tecnologia e bande:** il firmware imposta `AT+CMNB=3` (Cat-M e NB-IoT) e le bande NB-IoT 3, 8 e 20, se diverse da quelle salvate nel modem. Il modem provato aveva di fabbrica solo NB-IoT sulla banda 8, e non trovava rete: Vodafone Italia usa Cat-M e NB-IoT sulla banda 20.
+- **Tecnologia e bande:** il firmware imposta NB-IoT (`MODEM_NETWORK_MODE`) e le bande 3, 8 e 20, se diverse da quelle salvate nel modem. Il modem provato aveva NB-IoT solo sulla banda 8, e non trovava rete: Vodafone Italia usa NB-IoT sulla banda 20.
+- **Perché NB-IoT:** nelle prove su Vodafone con active time richiesto di 2 s, in NB-IoT la rete ha assegnato 2 s e il modem si è addormentato circa 5 s dopo l'invio. In Cat-M ha assegnato 120 s e il modem si è addormentato dopo circa 130 s. Prima di installare una stazione, controlla sul posto che NB-IoT ci sia, con `AT+CSQ` e `AT+CGATT?`. Altrimenti imposta `"3"`.
+- **Segnale dopo il risveglio:** appena sveglio `AT+CSQ` riporta `99,99` anche se la radio funziona: nelle prove NTP ha risposto proprio in quel momento. Non va usato per decidere se inviare.
 - **Risveglio:** nelle prove la connessione è pronta circa 10 s dopo l'impulso. Dopo il PSM `AT+CGATT?` può riportare `1` prima che la radio sia pronta, quindi il firmware ripete `AT+CNACT` finché la connessione non è attiva.
-- **Quando dorme:** il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto. Nelle prove in Cat-M su Vodafone la rete ha assegnato 120 s anche chiedendone 2, e il modem si è addormentato circa 130 s dopo ogni invio: su 5 minuti ne dorme circa 2,5. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
+- **Quando dorme:** il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
 - **Errori:** dopo `FAILS_TO_RESET` errori consecutivi il modem viene spento con `AT+CPOWD=1` e riacceso al report successivo. È l'unico caso di spegnimento completo.
 - **Campionamento:** il modem gira in un task FreeRTOS separato, quindi i comandi AT non interrompono le letture.
 - **Dati persi:** non c'è un buffer. Se la rete manca o il modem è occupato, in coda resta solo l'ultimo report e gli altri vanno persi; ogni report perso vale 5 minuti di dati.
@@ -478,7 +481,7 @@ Se su macOS non trova gli header C++, aggiungi `-isysroot $(xcrun --show-sdk-pat
 
 **Provato sul modem via USB:** registrazione in rete, connessione dati con `iot.1nce.net`, NTP, PSM concesso dalla rete, risveglio con PWRKEY e comandi di invio CoAP, accettati dal modem ma diretti a un indirizzo fittizio.
 
-**Ancora da provare:** la ricezione di un messaggio sul server e il dialogo con la XIAO sui pin, che dipende dai livelli logici. Se qualcosa non va, sul monitor seriale vedi:
+**Ancora da provare:** la ricezione di un messaggio sul server e il dialogo con la XIAO sui pin. Se qualcosa non va, sul monitor seriale vedi:
 
 | Controllo | Cosa vedi sul monitor seriale se fallisce |
 |---|---|
@@ -516,8 +519,8 @@ Il payload `7b7d` è un JSON vuoto, quindi il ricevitore lo scarta. Se nel suo l
 Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Manual V1.05*, capitolo 18 per il CoAP, che non è incluso nel repository. Restano da verificare questi punti:
 
 1. **Ricezione CoAP:** il modem accetta `AT+CCOAPPARA` e risponde `+CCOAPACTION: 0,<mid>`, ma questo dice solo che il pacchetto è partito. Il `<mid>` riportato (4097, 4098...) è diverso dal `MID` richiesto: va controllato sul server, ma non incide sull'autenticazione. Serve una prova con il server vero, che confermi anche come il modem passa `URI-PATH`, `CONTENT-FORMAT` e il payload.
-2. **UART sui pin e livelli logici:** finora i comandi sono passati dalla microUSB. Va misurata la tensione sul TX del modem, e il firmware completo va provato sulla XIAO.
-3. **Tempo sveglio:** circa 130 s dopo ogni invio in Cat-M, perché la rete assegna 120 s di active time. In NB-IoT la rete ha assegnato i 2 s richiesti: va provato se conviene limitarsi a NB-IoT.
+2. **UART sui pin:** finora i comandi sono passati dalla microUSB. Sulla scheda provata il modem accetta 3,3 V, ma non ha ancora risposto ad `AT` attraverso la XIAO: vanno controllati i fili TX e RX. Il firmware completo va provato sulla XIAO solo dopo.
+3. **Invio prima del sonno:** in NB-IoT il modem si addormenta circa 5 s dopo l'invio. La prova con il server deve confermare che il pacchetto parta prima.
 4. **Conferme CON:** il firmware presume che la risposta del server arrivi come `+CCOAPRECV`. Se non è così, con `COAP_CONFIRMABLE` ogni invio risulterebbe fallito.
 5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare un solo impulso, anche con il debounce a 40 ms.
 6. **Taratura:** la formula vale per un vero Davis. Un confronto con un anemometro portatile è il controllo più affidabile.

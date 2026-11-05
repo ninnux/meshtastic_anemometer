@@ -27,9 +27,12 @@
 #define MODEM_PWRKEY_PIN    1
 #define MODEM_PWRKEY_ACTIVE HIGH  // HIGH con transistor sulla scheda, LOW se diretto
 #define MODEM_APN           "iot.1nce.net"
+// "2" NB-IoT: nelle prove si addormenta 5 s dopo l'invio, contro 130 s di Cat-M.
+// "3" Cat-M e NB-IoT, se nel sito manca la copertura NB-IoT. "1" solo Cat-M.
+#define MODEM_NETWORK_MODE  "2"
 
 // ── CoAP ─────────────────────────────────────────────────────
-#define COAP_SERVER_IP   "192.0.2.1"  // IPv4 del server con collector_coap.py
+#define COAP_SERVER_IP   "anemometro.ninux.org"  // server con il ricevitore
 #define COAP_SERVER_PORT 5683
 #define NODE_NAME        "first_anemometer"
 #define COAP_PATH        "wind"
@@ -248,7 +251,7 @@ void modemLoop() {
   Serial1.begin(MODEM_BAUD_RATE);
 
   bool sent = false;
-  if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT) && syncClockIfNeeded()) {
+  if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT, MODEM_NETWORK_MODE) && syncClockIfNeeded()) {
     sent = sendReport(report);
   }
 
