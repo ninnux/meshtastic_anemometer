@@ -114,7 +114,7 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 Il messaggio è di circa 100 byte con le intestazioni IP/UDP, quindi meno di 1 MB al mese escluso l'overhead dell'operatore.
 
-**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. Con il fattore attuale (0.9, cioè 0,78 kn per impulso al secondo) il debounce di 20 ms (`DebounceMs`) permette di leggere fino a circa 37 kn. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
+**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. La velocità segue la formula Davis `V[mph] = P × 2.25 / T` con un impulso a giro, cioè 1,96 kn per impulso al secondo. Il debounce di 40 ms (`DebounceMs`) permette di leggere fino a circa 48 kn. La massima su 1 s ha quindi passi di circa 2 kn, mentre la media su 5 minuti è molto più fine. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
 
 **Risparmio energetico (PSM):** il modem non si spegne: resta registrato in rete e dopo ogni invio torna a dormire con il Power Saving Mode (`AT+CPSMS`), con o senza vento.
 
@@ -205,7 +205,7 @@ Questi campi e questo bucket **non** coincidono con quelli scritti da `collector
 
 ## Problemi noti / TODO
 
-- La velocità è `rotazioni × 0.9 × 0.868976` (0.868976 = conversione mph → nodi). Da verificare la costante 0.9: per un Davis con un impulso a giro e campioni da 1 s, 1600 giri/ora = 1 mph darebbe 2.25.
+- I firmware Meshtastic calcolano ancora `rotazioni × 0.9 × 0.868976` (0.868976 = conversione mph → nodi) con campioni da 1 s, mentre la formula Davis `V = P × 2.25 / T` darebbe 2.25. Il firmware SIM7080 usa già 2.25, quindi legge valori 2,5 volte più alti.
 - Il commit `73c061b` (9 ottobre 2026) ha portato il campione da circa 0,5 s a 1 s senza cambiare la formula: a parità di vento i valori sono raddoppiati, quindi i dati precedenti sono su una scala dimezzata.
 - I settori cardinali non sono simmetrici (S fino a 212° invece di 202°).
 - `ai/monitor.py` fa `status, prob = predict_now(...)`, ma `predict_now` restituisce solo una stringa.

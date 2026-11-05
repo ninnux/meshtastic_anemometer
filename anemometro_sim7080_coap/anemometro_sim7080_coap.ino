@@ -17,8 +17,8 @@
 #define WindSensorPin  2
 #define WindVanePin    A3
 #define VaneOffset     0
-// 35 kn = 45 impulsi/s = uno ogni 22 ms; con 20 ms il limite e' circa 37 kn
-#define DebounceMs     20
+// 35 kn = 18 impulsi/s = uno ogni 56 ms; con 40 ms il limite e' circa 48 kn
+#define DebounceMs     40
 
 // ── Modem (Serial1: RX=D7, TX=D6) ────────────────────────────
 #define MODEM_BAUD_RATE     115200
@@ -167,7 +167,8 @@ void loop() {
   float elapsedS = (sampleMs - LastSampleMs) / 1000.0f;
   LastSampleMs = sampleMs;
 
-  WindSpeed = rot * 0.9f * 0.868976f / elapsedS;
+  // Davis: V[mph] = P * 2.25 / T, con un impulso a giro; 0.868976 converte in nodi
+  WindSpeed = rot * 2.25f * 0.868976f / elapsedS;
   WindSpeedSum += WindSpeed * elapsedS;
   WindTimeSum  += elapsedS;
   WindSpeedMean = WindSpeedSum / WindTimeSum;
