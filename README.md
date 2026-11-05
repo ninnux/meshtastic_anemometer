@@ -3,9 +3,10 @@
 Stazione anemometrica low-power per il wing foil, basata su **Seeed XIAO nRF52840** e un anemometro a coppe con banderuola (tipo Davis). Le misure di vento vengono inviate:
 
 - via **LoRa/Meshtastic** (messaggio di testo diretto a un nodo ricevente, ogni ~15 s);
+- via **rete cellulare** (modem SIM7080G, Cat-M / NB-IoT) con protocollo **CoAP**, ogni 5 minuti: è il firmware alternativo del branch `sim7080`, che sostituisce il nodo Meshtastic;
 - via **Bluetooth LE** a uno smartphone, letto da una semplice web app (Web Bluetooth).
 
-Lato server, uno script Python riceve i messaggi Meshtastic e li salva su **InfluxDB**. A corredo ci sono degli esperimenti di **machine learning** (Random Forest) per stimare la probabilità di avere vento "navigabile" nelle ore successive, sia a partire dai dati della stazione sia dai dati di **OpenWeather**.
+Lato server, due script Python ricevono i messaggi Meshtastic e CoAP e li salvano su **InfluxDB**. A corredo ci sono degli esperimenti di **machine learning** (Random Forest) per stimare la probabilità di avere vento "navigabile" nelle ore successive, sia a partire dai dati della stazione sia dai dati di **OpenWeather**.
 
 ```
  Anemometro + banderuola
@@ -20,6 +21,15 @@ Lato server, uno script Python riceve i messaggi Meshtastic e li salva su **Infl
      webapp.html (smartphone, Chrome / Web Bluetooth)
 ```
 
+Con il firmware SIM7080 il percorso via LoRa è sostituito da:
+
+```
+ ┌─────────────────────┐   UART 115200  ┌──────────┐  Cat-M / NB-IoT  ┌───────────────────┐
+ │ XIAO nRF52840       │ ─────────────▶ │ SIM7080G │ ───────────────▶ │ collector_coap.py │──▶ InfluxDB
+ │ (firmware .ino)     │ ─ PWRKEY (D1)▶ │          │  CoAP / UDP 5683 └───────────────────┘
+ └─────────────────────┘                └──────────┘
+```
+
 ## Struttura del repository
 
 | Percorso | Descrizione |
@@ -28,6 +38,7 @@ Lato server, uno script Python riceve i messaggi Meshtastic e li salva su **Infl
 | `meshtastic_davis_anemometer_compensated/` | Firmware per XIAO nRF52840 **Sense**: aggiunge bussola QMC5883L + IMU LSM6DS3 per compensare la direzione con l'orientamento del dispositivo (tilt-compensated heading). Sperimentale. |
 | `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP ogni 5 minuti su rete cellulare, modem in PSM tra un invio e l'altro, BLE invariato. |
 | `collector_coap.py` | Ricevitore CoAP del firmware SIM7080: scrive su InfluxDB. |
+| `platformio.ini`, `pio_sketch_dir.py` | Compilazione con PlatformIO, un ambiente per ogni sketch. |
 | `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, massima e direzione. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
 | `ai/` | Prototipo di previsione basato sui dati storici in InfluxDB (pensato per una futura "boa" con pannello solare) e alert Telegram. |
@@ -100,45 +111,141 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 ### Versione SIM7080 + CoAP
 
-`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Velocità e direzione vengono lette ogni secondo. Ogni 5 minuti (`REPORT_PERIOD_S`) il firmware invia la media del periodo e la raffica massima (nodi) e la media vettoriale della direzione (gradi), usando il client CoAP del modem (`AT+CCOAP*`). La raffica è il valore più alto della media sugli ultimi 3 s, calcolata a finestra scorrevole ogni secondo. Lo stesso periodo vale per i valori `M` e `X` del BLE, che vengono azzerati a ogni invio.
+`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G. Il BLE resta come nel firmware base.
 
-**Collegamenti:** `D6` (TX) → RX modem, `D7` (RX) ← TX modem, `D1` → PWRKEY (obbligatorio, serve a risvegliare il modem dal PSM), GND in comune, a 115200 baud. Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche lavorano a 1,8 V: se il modulo non ha un traslatore di livello, serve aggiungerlo.
+> **Stato:** il firmware compila ed è provato solo sul computer, con un modem simulato. Non è ancora stato provato su un modem e un anemometro veri: vedi [Da verificare sull'hardware](#da-verificare-sullhardware).
 
-**Da configurare in testa allo sketch:** `MODEM_APN`, `COAP_SERVER_IP` (IP o hostname), `NODE_NAME`, `MODEM_PWRKEY_PIN`, `MODEM_PWRKEY_ACTIVE` (dipende dalla scheda del modem), `COAP_CONFIRMABLE`.
+#### Cosa misura e cosa invia
 
-**Messaggio:** CoAP POST su `coap://<server>:5683/wind`, Content-Format `application/json`, non confermabile (NON) salvo `COAP_CONFIRMABLE`:
+Velocità e direzione vengono lette ogni secondo. Ogni 5 minuti parte un messaggio con tre valori:
+
+| Campo | Significato | Come viene calcolato |
+|---|---|---|
+| `mean` | velocità media (nodi) | media di tutte le letture dei 5 minuti, pesata sul tempo misurato |
+| `max` | raffica massima (nodi) | valore più alto della media sugli ultimi 3 s, a finestra scorrevole aggiornata ogni secondo |
+| `dir` | direzione (gradi) | media vettoriale delle letture dei 5 minuti |
+
+Il messaggio è un CoAP POST su `coap://<server>:5683/wind`, con Content-Format `application/json`, non confermabile (NON) salvo `COAP_CONFIRMABLE`:
 
 ```json
 {"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225}
 ```
 
-Il messaggio è di circa 100 byte con le intestazioni IP/UDP, quindi meno di 1 MB al mese escluso l'overhead dell'operatore.
+`id` è `NODE_NAME` e il ricevitore lo salva come tag `sensor_name`. Il messaggio è di 98 byte con le intestazioni IP/UDP, quindi meno di 1 MB al mese, escluse la segnalazione di rete e l'overhead dell'operatore.
 
-**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. La velocità segue la formula Davis `V[mph] = P × 2.25 / T` con un impulso a giro, cioè 1,96 kn per impulso al secondo. Il debounce di 40 ms (`DebounceMs`) permette di leggere fino a circa 48 kn. La raffica su 3 s ha passi di circa 0,65 kn, la media su 5 minuti meno di 0,01 kn. Il valore istantaneo `S` del BLE resta su 1 s, con passi di circa 2 kn. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
+Sul BLE `M` e `X` sono la media e la raffica del periodo in corso e si azzerano a ogni invio, mentre `S` è il valore istantaneo su 1 s.
 
-**Risparmio energetico (PSM):** il modem non si spegne: resta registrato in rete e dopo ogni invio torna a dormire con il Power Saving Mode (`AT+CPSMS`), con o senza vento.
+#### Calcolo della velocità
 
-- Ogni 5 minuti il firmware apre la UART, sveglia il modem con un impulso su PWRKEY (se non risponde già ai comandi), ricontrolla registrazione e PDP, reinizializza il client CoAP, invia il report e richiude la UART.
-- Il firmware richiede alla rete un active time di 2 s e un TAU periodico di 2 ore. La rete può assegnare valori diversi: il log mostra la riga `+CPSMRDP:`, dove il quarto valore è l'active time assegnato e 0 significa PSM non supportato. In quel caso il modem resta sveglio e funziona comunque.
-- Il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto, quindi dorme un po' meno dei 5 minuti. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
-- Lo spegnimento completo (`AT+CPOWD=1`) resta solo come recupero: dopo 3 errori consecutivi il modem viene spento e riacceso al report successivo.
+```
+V[mph] = P × 2.25 / T        P = impulsi, T = tempo misurato in secondi
+V[kn]  = V[mph] × 0.868976
+```
 
-**Funzionamento:**
+- **Formula:** è quella dell'anemometro Davis 6410 (1600 giri/ora = 1 mph), con un impulso a giro. Ogni impulso al secondo vale 1,96 kn.
+- **Tempo misurato:** `T` è il tempo reale tra due letture, quindi una lettura in ritardo non crea una falsa raffica.
+- **Debounce:** `DebounceMs` è 40 ms e permette di leggere fino a circa 48 kn. 35 kn corrispondono a un impulso ogni 56 ms.
+- **Risoluzione:** la raffica su 3 s ha passi di circa 0,65 kn, la media su 5 minuti meno di 0,01 kn, il valore `S` su 1 s circa 2 kn.
 
-- Il modem gira in un task FreeRTOS separato, quindi i comandi AT non interrompono il campionamento.
-- Se il modem è occupato o la rete manca, i report vengono scartati: resta solo l'ultimo in coda e non c'è buffer per i periodi senza rete.
-- La rete viene ricontrollata a ogni invio. Con NON un server spento non viene rilevato; con `COAP_CONFIRMABLE` sì, al costo di una conferma per ogni messaggio.
+#### Lettura della direzione
 
-**Ricevitore:**
+La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°, quindi **il potenziometro deve essere alimentato dal 3V3 della XIAO**. Con il riferimento predefinito (0–3,6 V) una banderuola a 3,3 V si fermerebbe attorno a 330°. Il firmware base usa ancora quel riferimento.
+
+#### Collegamenti
+
+| XIAO | Modem | Note |
+|---|---|---|
+| `D6` (TX) | RX | UART a 115200 baud |
+| `D7` (RX) | TX | |
+| `D1` | PWRKEY | obbligatorio: serve ad accendere il modem e a risvegliarlo dal PSM |
+| `GND` | GND | massa in comune |
+
+Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche dovrebbero lavorare a 1,8 V: controlla sul manuale della tua scheda e, se non ha un traslatore di livello, aggiungilo.
+
+Anemometro su `D2` e banderuola su `A3`, come nel firmware base.
+
+#### Parametri in testa allo sketch
+
+| Define | Valore attuale | Significato |
+|---|---|---|
+| `MODEM_APN` | `iot.1nce.net` | APN della SIM |
+| `COAP_SERVER_IP` | `192.0.2.1` | **Segnaposto, da sostituire.** IP o hostname del server con `collector_coap.py` |
+| `COAP_SERVER_PORT` | `5683` | Porta UDP del server |
+| `NODE_NAME` | `first_anemometer` | Nome della stazione: lettere, numeri, `_` e `-`, massimo 32 caratteri |
+| `COAP_CONFIRMABLE` | `false` | `true` usa messaggi CON e rileva anche un server spento, con una conferma per ogni messaggio |
+| `REPORT_PERIOD_S` | `300` | Secondi tra due invii |
+| `DebounceMs` | `40` | Debounce del contatto reed |
+| `MODEM_PWRKEY_PIN` | `1` | Pin collegato a PWRKEY |
+| `MODEM_PWRKEY_ACTIVE` | `HIGH` | `HIGH` con transistor sulla scheda del modem, `LOW` se PWRKEY è collegato direttamente |
+| `FAILS_TO_RESET` | `3` | Errori consecutivi prima dello spegnimento completo |
+| `VaneOffset` | `0` | Offset in gradi per allineare la banderuola al nord |
+
+Nel driver `sim7080.cpp` si trovano i valori PSM richiesti alla rete (`PSM_PERIODIC_TAU`, `PSM_ACTIVE_TIME`) e la durata dell'impulso (`PWRKEY_PULSE_MS`).
+
+#### Ciclo di invio e risparmio energetico (PSM)
+
+Il modem non si spegne tra un invio e l'altro: resta registrato in rete e dorme con il Power Saving Mode (`AT+CPSMS`). Ho scelto il PSM e non l'eDRX perché la stazione non deve ricevere comandi dal server.
+
+A ogni invio il firmware:
+
+1. apre la UART e sveglia il modem con un impulso su PWRKEY, ma solo se non risponde a tre `AT` consecutivi, perché un impulso a modem acceso lo spegnerebbe;
+2. controlla SIM, registrazione (`AT+CGATT?`) e PDP (`AT+CNACT`), e riattiva quello che manca;
+3. inizializza il client CoAP con `AT+CCOAPINIT` e `AT+CCOAPURL`;
+4. compone il pacchetto con `AT+CCOAPPARA`, con il payload in esadecimale perché le virgolette del JSON chiuderebbero la stringa del comando, e lo invia con `AT+CCOAPACTION`;
+5. richiude la UART, e il modem entra da solo in PSM.
+
+Altri dettagli:
+
+- **Valori richiesti alla rete:** active time di 2 s e TAU periodico di 2 ore. La rete può assegnarne altri: il log mostra la riga `+CPSMRDP:`, dove il quarto valore è l'active time assegnato e 0 significa PSM non supportato. In quel caso il modem resta sveglio e funziona comunque.
+- **Quando dorme:** il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto, quindi dorme un po' meno dei 5 minuti. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
+- **Errori:** dopo `FAILS_TO_RESET` errori consecutivi il modem viene spento con `AT+CPOWD=1` e riacceso al report successivo. È l'unico caso di spegnimento completo.
+- **Campionamento:** il modem gira in un task FreeRTOS separato, quindi i comandi AT non interrompono le letture.
+- **Dati persi:** non c'è un buffer. Se la rete manca o il modem è occupato, in coda resta solo l'ultimo report e gli altri vanno persi; ogni report perso vale 5 minuti di dati.
+- **Consegna:** con NON un server spento non viene rilevato. Con `COAP_CONFIRMABLE` sì, ma va prima verificato sul modem come arrivano le conferme.
+
+#### Ricevitore
 
 ```bash
 pip install aiocoap influxdb-client
 INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 ```
 
-Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario è quello di ricezione e i valori si riferiscono ai 5 minuti precedenti; senza `INFLUX_URL` stampa soltanto i dati. Serve la porta UDP 5683 raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque conosca l'indirizzo può inviare dati.
+| Variabile d'ambiente | Predefinito | Significato |
+|---|---|---|
+| `INFLUX_URL` | nessuno | URL di InfluxDB; senza, stampa soltanto i dati |
+| `INFLUX_TOKEN` | nessuno | Token di InfluxDB |
+| `INFLUX_ORG` | `meteo_org` | Organizzazione |
+| `INFLUX_BUCKET` | `anemometri` | Bucket |
+| `COAP_BIND` | `::` | Indirizzo di ascolto |
+| `COAP_PORT` | `5683` | Porta UDP di ascolto |
 
-**Test sul computer** (driver con modem simulato): vedi il comando in testa a `anemometro_sim7080_coap/test/test_sim7080.cpp`.
+Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario è quello di ricezione e i valori si riferiscono ai 5 minuti precedenti. I messaggi malformati vengono scartati e registrati nel log. Ai messaggi NON non risponde, per non consumare traffico; a quelli CON risponde `2.04` oppure `4.00`.
+
+La porta UDP deve essere raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque raggiunga la porta può inviare dati a nome di una stazione. Una SIM con APN privata o una VPN risolverebbe il problema.
+
+#### Test sul computer
+
+Provano il driver con un modem simulato, il payload e il calcolo della raffica. Non provano lo sketch `.ino` né l'hardware. Dalla cartella `anemometro_sim7080_coap/`:
+
+```bash
+g++ -std=c++17 -Itest -I. test/test_sim7080.cpp sim7080.cpp -o /tmp/test_sim7080 && /tmp/test_sim7080
+```
+
+Se su macOS non trova gli header C++, aggiungi `-isysroot $(xcrun --show-sdk-path) -I$(xcrun --show-sdk-path)/usr/include/c++/v1`.
+
+#### Da verificare sull'hardware
+
+Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Manual V1.05*, capitolo 18 per il CoAP, che non è incluso nel repository. Il manuale lascia aperti questi punti:
+
+1. **`AT+CCOAPPARA`:** il manuale mostra solo un esempio minimale. `"CODE",2` per il POST, i nomi dei parametri tra virgolette e il payload in esadecimale sono deduzioni. Se dà `ERROR`, parti da qui.
+2. **PSM concesso:** controlla la riga `+CPSMRDP:` nel log. Dipende dall'operatore.
+3. **Risveglio:** il manuale non indica quanto deve durare l'impulso su PWRKEY per uscire dal PSM, né se PDP e client CoAP sopravvivono. Il firmware usa 1,2 s e ricontrolla tutto a ogni invio.
+4. **Conferme CON:** il firmware presume che la risposta del server arrivi come `+CCOAPRECV`. Se non è così, con `COAP_CONFIRMABLE` ogni invio risulterebbe fallito.
+5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare un solo impulso, anche con il debounce a 40 ms.
+6. **Taratura:** la formula vale per un vero Davis. Un confronto con un anemometro portatile è il controllo più affidabile.
+7. **Consumo:** misura la corrente del modem per vedere quanto dorme davvero.
+
+Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, ma per verificare il PSM serve un periodo più lungo.
 
 ## Web app BLE
 
@@ -205,8 +312,18 @@ Questi campi e questo bucket **non** coincidono con quelli scritti da `collector
 
 ## Problemi noti / TODO
 
-- I firmware Meshtastic calcolano ancora `rotazioni × 0.9 × 0.868976` (0.868976 = conversione mph → nodi) con campioni da 1 s, mentre la formula Davis `V = P × 2.25 / T` darebbe 2.25. Il firmware SIM7080 usa già 2.25, quindi legge valori 2,5 volte più alti.
-- Il commit `73c061b` (9 ottobre 2026) ha portato il campione da circa 0,5 s a 1 s senza cambiare la formula: a parità di vento i valori sono raddoppiati, quindi i dati precedenti sono su una scala dimezzata.
+- I firmware Meshtastic calcolano ancora `rotazioni × 0.9 × 0.868976` con campioni da 1 s, mentre la formula Davis darebbe 2.25 al posto di 0.9. Leggono quindi 2,5 volte meno del firmware SIM7080.
+- Il commit `73c061b` (9 ottobre 2026) ha portato il campione da circa 0,5 s a 1 s senza cambiare la formula. A parità di vento i dati su InfluxDB hanno quindi tre scale diverse, da non mescolare senza correggerle:
+
+  | Dati | kn per impulso al secondo |
+  |---|---|
+  | Firmware Meshtastic fino al 9 ottobre 2026 | circa 0,39 |
+  | Firmware Meshtastic dopo il 9 ottobre 2026 | 0,78 |
+  | Firmware SIM7080 | 1,96 |
+
+  Le soglie e i modelli basati sui dati vecchi, come gli 11 kn in `ai/lib.py`, vanno rivisti.
+- Anche `max` cambia significato: nel firmware SIM7080 è una raffica su 3 s, nei firmware Meshtastic il picco del singolo campione.
+- Il firmware base legge la banderuola con il riferimento 0–3,6 V: se è alimentata a 3,3 V, la direzione si ferma attorno a 330°.
 - I settori cardinali non sono simmetrici (S fino a 212° invece di 202°).
 - `ai/monitor.py` fa `status, prob = predict_now(...)`, ma `predict_now` restituisce solo una stringa.
 - `analizza_modello.py` ha il nome del modello cablato nel codice; gli script OpenWeather sono duplicati e potrebbero diventare un unico script con lo spot come parametro.
