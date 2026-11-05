@@ -61,7 +61,7 @@ volatile bool     IsReportRequired      = false;
 volatile bool     IsBLEUpdateRequired   = false;
 volatile uint16_t TimerCount            = 0;
 volatile uint32_t Rotations             = 0;
-volatile uint32_t ContactBounceTime     = 0;
+volatile uint32_t ContactBounceTick     = 0;
 
 // Davis: V[mph] = P * 2.25 / T, con un impulso a giro; 0.868976 converte in nodi
 const float KnPerPulsePerSecond = 2.25f * 0.868976f;
@@ -386,10 +386,11 @@ void isr_timer_cb(TimerHandle_t xTimerID) {
 // ISR – Rotazione anemometro
 // ============================================================
 void isr_rotation() {
-  uint32_t now = millis();
-  if ((now - ContactBounceTime) > DebounceMs) {
+  // Tick e non millis(): vedi wind_clock.h, il salto conterebbe un impulso in piu'
+  uint32_t now = xTaskGetTickCount();
+  if ((now - ContactBounceTick) > ms2tick(DebounceMs)) {
     Rotations++;
-    ContactBounceTime = now;
+    ContactBounceTick = now;
   }
 }
 
