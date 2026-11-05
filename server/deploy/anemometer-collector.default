@@ -8,6 +8,11 @@ INFLUX_TOKEN=""
 INFLUX_ORG="meteo_org"
 INFLUX_BUCKET="anemometri"
 
+# Chiavi delle stazioni: nome:chiave,nome:chiave. Il nome e' NODE_NAME, la chiave e' la
+# stessa di secrets.h nel firmware (openssl rand -hex 32). Senza chiavi ogni messaggio
+# viene rifiutato.
+STATION_KEYS=""
+
 # Indirizzo e porta UDP di ascolto del server CoAP
 COAP_BIND="::"
 COAP_PORT="5683"

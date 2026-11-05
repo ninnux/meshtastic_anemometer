@@ -10,8 +10,11 @@
 #include <InternalFileSystem.h>
 #include <bluefruit.h>
 #include <math.h>
+#include "secrets.h"  // creato da secrets.example.h, non e' nel repository
 #include "sim7080.h"
 #include "wind_report.h"
+
+using namespace Adafruit_LittleFS_Namespace;
 
 // ── Pin ──────────────────────────────────────────────────────
 #define WindSensorPin  2
@@ -37,6 +40,7 @@
 // ── Invio ────────────────────────────────────────────────────
 #define REPORT_PERIOD_S 300
 #define FAILS_TO_RESET  3  // errori consecutivi prima dello spegnimento completo
+#define COUNTER_FILE    "/message_epoch.bin"
 
 // ── BLE ──────────────────────────────────────────────────────
 BLEService        windService("A0010000-0001-0001-0001-000000000001");
@@ -82,6 +86,7 @@ SemaphoreHandle_t sampleSemaphore;
 QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vince l'ultimo
 
 Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
+MessageCounter messageCounter;
 
 // ── Prototipi ────────────────────────────────────────────────
 void isr_timer_cb(TimerHandle_t xTimerID);
@@ -91,6 +96,7 @@ int  meanWindDirection();
 void queueReport();
 void modemLoop();
 bool sendReport(const WindReport& report);
+bool startCounterEpoch();
 void setupBLE();
 void updateBLE();
 void startAdvertising();
@@ -118,6 +124,9 @@ void setup() {
   analogReference(AR_VDD4);
 
   setupBLE();
+
+  InternalFS.begin();
+  if (!startCounterEpoch()) Serial.println("Contatore messaggi non salvato in flash");
 
   lastAdvStart = millis() - ADV_PERIOD_MS;
 
@@ -264,8 +273,14 @@ bool sendReport(const WindReport& report) {
   // scambi i messaggi dopo una riaccensione per duplicati di quelli precedenti.
   static uint16_t messageId = (uint16_t)millis();
 
-  char payload[96];
-  if (!formatWindPayload(payload, sizeof(payload), NODE_NAME, report)) {
+  if (!messageCounter.ready() && !startCounterEpoch()) {
+    Serial.println("Contatore messaggi non disponibile: report non inviato");
+    return false;
+  }
+
+  char payload[128];
+  if (!formatSignedWindPayload(payload, sizeof(payload), NODE_NAME, report,
+                               messageCounter.next(), STATION_KEY)) {
     Serial.println("Report troppo lungo");
     return false;
   }
@@ -275,6 +290,29 @@ bool sendReport(const WindReport& report) {
   Serial.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
   Serial.println(payload);
   return sent;
+}
+
+// Il server scarta i contatori gia' visti: l'epoca deve crescere a ogni avvio.
+// Si aggiunge in coda invece di riscrivere: un guasto a meta' non la azzera.
+bool startCounterEpoch() {
+  uint32_t last = 0;
+  uint32_t value;
+  File file(InternalFS);
+  if (file.open(COUNTER_FILE, FILE_O_READ)) {
+    while (file.read(&value, sizeof(value)) == sizeof(value)) {
+      if (value > last) last = value;
+    }
+    file.close();
+  }
+
+  uint32_t epoch = last + 1;
+  if (epoch > 0xFFFF) return false;
+  if (!file.open(COUNTER_FILE, FILE_O_WRITE)) return false;
+  bool saved = file.write((const uint8_t*)&epoch, sizeof(epoch)) == sizeof(epoch);
+  file.close();
+
+  if (saved) messageCounter.setEpoch((uint16_t)epoch);
+  return saved;
 }
 
 // ============================================================

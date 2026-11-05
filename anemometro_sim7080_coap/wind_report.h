@@ -1,12 +1,16 @@
 // ============================================================
-// wind_report.h – Report con i valori del periodo di invio.
-// Nessuna dipendenza da Arduino.
+// wind_report.h – Report con i valori del periodo di invio, firmato
+// con HMAC-SHA256. Nessuna dipendenza da Arduino.
 // ============================================================
 #pragma once
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include "hmac_sha256.h"
+
+#define WIND_SIGNATURE_BYTES 16  // HMAC troncato a 128 bit
 
 struct WindReport {
   float mean;
@@ -44,9 +48,47 @@ private:
   uint8_t  _count = 0;
 };
 
-// Scrive il payload JSON in out. Ritorna false se non entra in cap.
-inline bool formatWindPayload(char* out, size_t cap, const char* id, const WindReport& r) {
-  int written = snprintf(out, cap, "{\"id\":\"%s\",\"mean\":%.1f,\"max\":%.1f,\"dir\":%d}",
-                         id, r.mean, r.max, r.dir);
-  return written >= 0 && (size_t)written < cap;
+// Contatore sempre crescente, anche dopo un riavvio: la parte alta (epoca) e'
+// salvata in flash una volta per avvio, cosi' la flash non si consuma a ogni invio.
+class MessageCounter {
+public:
+  void setEpoch(uint16_t epoch) {
+    _epoch = epoch;
+    _sequence = 0;
+    _ready = true;
+  }
+
+  // false se serve una nuova epoca: all'avvio e dopo 65536 messaggi (circa 227 giorni)
+  bool ready() const { return _ready; }
+
+  uint32_t next() {
+    uint32_t value = ((uint32_t)_epoch << 16) | _sequence;
+    if (++_sequence == 0) _ready = false;
+    return value;
+  }
+
+private:
+  uint16_t _epoch    = 0;
+  uint16_t _sequence = 0;
+  bool     _ready    = false;
+};
+
+// Scrive il payload JSON in out. La firma copre tutti i byte che la precedono.
+// Ritorna false se non entra in cap.
+inline bool formatSignedWindPayload(char* out, size_t cap, const char* id, const WindReport& r,
+                                    uint32_t counter, const char* key) {
+  int written = snprintf(out, cap, "{\"id\":\"%s\",\"mean\":%.1f,\"max\":%.1f,\"dir\":%d,\"n\":%lu",
+                         id, r.mean, r.max, r.dir, (unsigned long)counter);
+  // ,"sig":" + esadecimale + "} + terminatore
+  const size_t tailLen = 8 + WIND_SIGNATURE_BYTES * 2 + 2 + 1;
+  if (written < 0 || (size_t)written + tailLen > cap) return false;
+
+  uint8_t digest[SHA256_DIGEST_BYTES];
+  hmacSha256((const uint8_t*)key, strlen(key), (const uint8_t*)out, (size_t)written, digest);
+
+  size_t n = (size_t)written;
+  n += snprintf(out + n, cap - n, ",\"sig\":\"");
+  for (int i = 0; i < WIND_SIGNATURE_BYTES; i++) n += snprintf(out + n, cap - n, "%02x", digest[i]);
+  snprintf(out + n, cap - n, "\"}");
+  return true;
 }

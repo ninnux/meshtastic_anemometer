@@ -19,30 +19,32 @@ type Report struct {
 	Direction int
 }
 
-// ParseReport valida il payload JSON {"id":..., "mean":..., "max":..., "dir":...}.
-func ParseReport(payload []byte) (Report, error) {
+// ParseReport valida il payload JSON {"id":..., "mean":..., "max":..., "dir":..., "n":...}
+// e ritorna anche il contatore. La firma viene controllata da Auth.
+func ParseReport(payload []byte) (Report, uint32, error) {
 	var raw struct {
 		ID   *string  `json:"id"`
 		Mean *float64 `json:"mean"`
 		Max  *float64 `json:"max"`
 		Dir  *int     `json:"dir"`
+		N    *uint32  `json:"n"`
 	}
 	if err := json.Unmarshal(payload, &raw); err != nil {
-		return Report{}, err
+		return Report{}, 0, err
 	}
-	if raw.ID == nil || raw.Mean == nil || raw.Max == nil || raw.Dir == nil {
-		return Report{}, errors.New("campi mancanti")
+	if raw.ID == nil || raw.Mean == nil || raw.Max == nil || raw.Dir == nil || raw.N == nil {
+		return Report{}, 0, errors.New("campi mancanti")
 	}
 	if !namePattern.MatchString(*raw.ID) {
-		return Report{}, errors.New("nome stazione non valido")
+		return Report{}, 0, errors.New("nome stazione non valido")
 	}
 	if *raw.Mean < 0 || *raw.Max < 0 {
-		return Report{}, errors.New("velocità negativa")
+		return Report{}, 0, errors.New("velocità negativa")
 	}
 	if *raw.Dir < 0 || *raw.Dir > 360 {
-		return Report{}, errors.New("direzione fuori intervallo")
+		return Report{}, 0, errors.New("direzione fuori intervallo")
 	}
-	return Report{Name: *raw.ID, Mean: *raw.Mean, Max: *raw.Max, Direction: *raw.Dir}, nil
+	return Report{Name: *raw.ID, Mean: *raw.Mean, Max: *raw.Max, Direction: *raw.Dir}, *raw.N, nil
 }
 
 // LineProtocol scrive lo stesso formato di collector_coap.py, con l'orario in secondi.

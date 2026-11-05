@@ -1,5 +1,6 @@
 # segreti
 .env
+secrets.h
 
 # ambienti Python
 venv/

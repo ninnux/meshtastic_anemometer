@@ -1,12 +1,14 @@
 // Ricevitore CoAP per anemometro_sim7080_coap: POST su /wind con payload JSON
-// {"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi}.
+// {"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi, "n": contatore, "sig": firma}.
 //
-// Senza INFLUX_URL nell'ambiente registra soltanto i dati ricevuti.
+// Accetta solo i messaggi firmati con le chiavi di STATION_KEYS. Senza INFLUX_URL
+// nell'ambiente registra soltanto i dati ricevuti.
 package main
 
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -43,23 +45,17 @@ func reply(w mux.ResponseWriter, r *mux.Message, code codes.Code) {
 	}
 }
 
-func windHandler(store func(line string)) mux.HandlerFunc {
-	dedup := NewDeduplicator()
+func windHandler(auth *Auth, store func(line string)) mux.HandlerFunc {
 	return func(w mux.ResponseWriter, r *mux.Message) {
-		remote := w.Conn().RemoteAddr()
 		if r.Code() != codes.POST {
 			reply(w, r, codes.MethodNotAllowed)
-			return
-		}
-		if dedup.Seen(remote.String(), r.MessageID(), time.Now()) {
-			reply(w, r, codes.Changed)
 			return
 		}
 
 		payload, err := r.ReadBody()
 		if err == nil {
 			var report Report
-			if report, err = ParseReport(payload); err == nil {
+			if report, err = auth.Verify(payload); err == nil {
 				if store != nil {
 					store(report.LineProtocol(time.Now()))
 				}
@@ -72,14 +68,18 @@ func windHandler(store func(line string)) mux.HandlerFunc {
 		if len(payload) > maxLoggedPayload {
 			payload = payload[:maxLoggedPayload]
 		}
-		log.Printf("messaggio non valido da %v: %v: %q", remote, err, payload)
-		reply(w, r, codes.BadRequest)
+		log.Printf("scartato da %v: %v: %q", w.Conn().RemoteAddr(), err, payload)
+		if errors.Is(err, errUnauthorized) {
+			reply(w, r, codes.Unauthorized)
+		} else {
+			reply(w, r, codes.BadRequest)
+		}
 	}
 }
 
-func newRouter(store func(line string)) (*mux.Router, error) {
+func newRouter(auth *Auth, store func(line string)) (*mux.Router, error) {
 	router := mux.NewRouter()
-	if err := router.Handle("/wind", windHandler(store)); err != nil {
+	if err := router.Handle("/wind", windHandler(auth, store)); err != nil {
 		return nil, err
 	}
 	return router, nil
@@ -91,7 +91,7 @@ func run() error {
 		if err != nil {
 			return fmt.Errorf("apertura log: %w", err)
 		}
-		defer file.Close()
+		// Resta aperto fino all'uscita: anche l'errore finale di main deve finire nel log
 		log.SetOutput(file)
 	}
 
@@ -113,7 +113,23 @@ func run() error {
 		close(writerDone)
 	}
 
-	router, err := newRouter(store)
+	keys, err := ParseStationKeys(os.Getenv("STATION_KEYS"))
+	if err != nil {
+		return err
+	}
+	if len(keys) == 0 {
+		log.Print("STATION_KEYS non impostato: tutti i messaggi verranno rifiutati")
+	}
+	statePath := os.Getenv("STATE_FILE")
+	if statePath == "" {
+		log.Print("STATE_FILE non impostato: dopo un riavvio i vecchi messaggi tornano validi")
+	}
+	auth, err := NewAuth(keys, statePath)
+	if err != nil {
+		return err
+	}
+
+	router, err := newRouter(auth, store)
 	if err != nil {
 		return err
 	}

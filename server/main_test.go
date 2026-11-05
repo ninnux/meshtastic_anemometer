@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"net"
 	"strings"
 	"sync"
@@ -36,9 +40,28 @@ func (c *collected) count() int {
 	return len(c.lines)
 }
 
+const testKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+func newTestAuth(t *testing.T) *Auth {
+	t.Helper()
+	auth, err := NewAuth(map[string][]byte{"first_anemometer": []byte(testKey)}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return auth
+}
+
+// signedPayload firma come il firmware
+func signedPayload(key string, counter int) string {
+	prefix := fmt.Sprintf(`{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":%d`, counter)
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(prefix))
+	return prefix + `,"sig":"` + hex.EncodeToString(mac.Sum(nil)[:signatureBytes]) + `"}`
+}
+
 func startServer(t *testing.T, c *collected) string {
 	t.Helper()
-	router, err := newRouter(c.store)
+	router, err := newRouter(newTestAuth(t), c.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,12 +104,10 @@ func postCON(t *testing.T, conn *udpclient.Conn, path, payload string) codes.Cod
 	return resp.Code()
 }
 
-const validPayload = `{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225}`
-
 func TestConfirmableValid(t *testing.T) {
 	c := &collected{}
 	conn := dial(t, startServer(t, c))
-	if code := postCON(t, conn, "/wind", validPayload); code != codes.Changed {
+	if code := postCON(t, conn, "/wind", signedPayload(testKey, 1)); code != codes.Changed {
 		t.Fatalf("codice %v", code)
 	}
 	if c.count() != 1 || !strings.HasPrefix(c.lines[0], "meteo,sensor_name=first_anemometer wind_mean=10.8,wind_max=15.1,direction_deg=225i ") {
@@ -105,10 +126,33 @@ func TestConfirmableInvalid(t *testing.T) {
 	}
 }
 
+func TestConfirmableWrongSignature(t *testing.T) {
+	c := &collected{}
+	conn := dial(t, startServer(t, c))
+	wrong := "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+	if code := postCON(t, conn, "/wind", signedPayload(wrong, 1)); code != codes.Unauthorized {
+		t.Fatalf("codice %v", code)
+	}
+	if c.count() != 0 {
+		t.Fatalf("righe: %v", c.lines)
+	}
+}
+
+func TestUnsignedMessageRejected(t *testing.T) {
+	c := &collected{}
+	conn := dial(t, startServer(t, c))
+	if code := postCON(t, conn, "/wind", `{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":1}`); code != codes.BadRequest {
+		t.Fatalf("codice %v", code)
+	}
+	if c.count() != 0 {
+		t.Fatalf("righe: %v", c.lines)
+	}
+}
+
 func TestUnknownPath(t *testing.T) {
 	c := &collected{}
 	conn := dial(t, startServer(t, c))
-	if code := postCON(t, conn, "/altro", validPayload); code != codes.NotFound {
+	if code := postCON(t, conn, "/altro", signedPayload(testKey, 1)); code != codes.NotFound {
 		t.Fatalf("codice %v", code)
 	}
 }
@@ -168,7 +212,7 @@ func sendRaw(t *testing.T, addr string, datagrams ...[]byte) *net.UDPConn {
 func TestNonConfirmableGetsNoResponse(t *testing.T) {
 	c := &collected{}
 	addr := startServer(t, c)
-	conn := sendRaw(t, addr, nonDatagram(t, 1000, validPayload))
+	conn := sendRaw(t, addr, nonDatagram(t, 1000, signedPayload(testKey, 1)))
 	waitFor(t, func() bool { return c.count() == 1 })
 
 	_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
@@ -178,41 +222,21 @@ func TestNonConfirmableGetsNoResponse(t *testing.T) {
 	}
 }
 
-// Un messaggio duplicato dalla rete non deve produrre due punti
-func TestDuplicateMessageStoredOnce(t *testing.T) {
+// Lo stesso messaggio, ripetuto dalla rete o da chi l'ha intercettato, vale una volta sola
+func TestRepeatedMessageStoredOnce(t *testing.T) {
 	c := &collected{}
 	addr := startServer(t, c)
-	d := nonDatagram(t, 2000, validPayload)
-	sendRaw(t, addr, d, d)
+	payload := signedPayload(testKey, 5)
+	sendRaw(t, addr, nonDatagram(t, 2000, payload), nonDatagram(t, 2000, payload), nonDatagram(t, 2001, payload))
 	time.Sleep(300 * time.Millisecond)
 	if c.count() != 1 {
 		t.Fatalf("punti: %d", c.count())
 	}
 }
 
-func TestDeduplicatorExpires(t *testing.T) {
-	d := NewDeduplicator()
-	start := time.Unix(1000, 0)
-	if d.Seen("a", 1, start) {
-		t.Error("primo messaggio visto come duplicato")
-	}
-	if !d.Seen("a", 1, start.Add(exchangeLifetime-time.Second)) {
-		t.Error("duplicato non riconosciuto")
-	}
-	if d.Seen("b", 1, start) {
-		t.Error("stesso ID da un altro indirizzo visto come duplicato")
-	}
-	if d.Seen("a", 1, start.Add(exchangeLifetime)) {
-		t.Error("ID riusato dopo la scadenza visto come duplicato")
-	}
-	if len(d.seen) != 1 { // restano solo "a" appena registrato; "b" è scaduto
-		t.Errorf("voci non rimosse: %d", len(d.seen))
-	}
-}
-
-func TestDifferentMessageIDsBothStored(t *testing.T) {
+func TestGrowingCountersAllStored(t *testing.T) {
 	c := &collected{}
 	addr := startServer(t, c)
-	sendRaw(t, addr, nonDatagram(t, 3000, validPayload), nonDatagram(t, 3001, validPayload))
+	sendRaw(t, addr, nonDatagram(t, 3000, signedPayload(testKey, 1)), nonDatagram(t, 3001, signedPayload(testKey, 2)))
 	waitFor(t, func() bool { return c.count() == 2 })
 }

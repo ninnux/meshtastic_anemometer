@@ -7,6 +7,7 @@
 #include <vector>
 #include "Arduino.h"
 #include "sim7080.h"
+#include "hmac_sha256.h"
 #include "wind_report.h"
 
 uint32_t fakeMillis = 0;
@@ -468,32 +469,120 @@ static void testPayloadFitsAtLine() {
   FakeModem m; reset(m);
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  std::string longest(96, 'x');  // dimensione del buffer del payload nello sketch
+  std::string longest(128, 'x');  // dimensione del buffer del payload nello sketch
   CHECK(modem.coapPost(65535, "wind", 50, longest.c_str(), true));
   CHECK(m.last("AT+CCOAPPARA").size() <= 559);
 }
 
+static std::string hex(const uint8_t* data, size_t len) {
+  char buf[3];
+  std::string out;
+  for (size_t i = 0; i < len; i++) {
+    snprintf(buf, sizeof(buf), "%02x", data[i]);
+    out += buf;
+  }
+  return out;
+}
+
+static std::string sha256Hex(const std::string& message) {
+  Sha256 hash;
+  hash.update((const uint8_t*)message.data(), message.size());
+  uint8_t digest[SHA256_DIGEST_BYTES];
+  hash.finish(digest);
+  return hex(digest, sizeof(digest));
+}
+
+static std::string hmacHex(const std::string& key, const std::string& message) {
+  uint8_t digest[SHA256_DIGEST_BYTES];
+  hmacSha256((const uint8_t*)key.data(), key.size(), (const uint8_t*)message.data(), message.size(), digest);
+  return hex(digest, sizeof(digest));
+}
+
+// Vettori di FIPS 180-4
+static void testSha256Vectors() {
+  CHECK(sha256Hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  CHECK(sha256Hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  CHECK(sha256Hex("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")
+        == "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+  CHECK(sha256Hex(std::string(1000000, 'a')) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+}
+
+// Vettori di RFC 4231: chiavi corte, lunghe come il blocco e piu' lunghe, da cui l'hash
+static void testHmacVectors() {
+  CHECK(hmacHex(std::string(20, '\x0b'), "Hi There")
+        == "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7");
+  CHECK(hmacHex("Jefe", "what do ya want for nothing?")
+        == "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+  CHECK(hmacHex(std::string(20, '\xaa'), std::string(50, '\xdd'))
+        == "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe");
+  CHECK(hmacHex(std::string(131, '\xaa'), "Test Using Larger Than Block-Size Key - Hash Key First")
+        == "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54");
+}
+
+// Stesso vettore dei test del server Go e calcolato con hmac di Python
+static const char* TEST_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+static const char* SIGNED_PAYLOAD = "{\"id\":\"first_anemometer\",\"mean\":10.8,\"max\":15.1,\"dir\":225,\"n\":65537,"
+                                    "\"sig\":\"3a482c440614dcc4d24ea0c6a99eed20\"}";
+
 static const WindReport SAMPLE_REPORT = {10.8f, 15.1f, 225};
 
-static void testPayloadFormat() {
-  char buf[96];
-  CHECK(formatWindPayload(buf, sizeof(buf), "first_anemometer", SAMPLE_REPORT));
-  CHECK(strcmp(buf, "{\"id\":\"first_anemometer\",\"mean\":10.8,\"max\":15.1,\"dir\":225}") == 0);
+static void testSignedPayloadMatchesVector() {
+  char buf[128];
+  CHECK(formatSignedWindPayload(buf, sizeof(buf), "first_anemometer", SAMPLE_REPORT, 65537, TEST_KEY));
+  CHECK(strcmp(buf, SIGNED_PAYLOAD) == 0);
+}
+
+static void testSignatureChangesWithEveryField() {
+  char base[128], other[128];
+  CHECK(formatSignedWindPayload(base, sizeof(base), "a", SAMPLE_REPORT, 1, TEST_KEY));
+  CHECK(formatSignedWindPayload(other, sizeof(other), "a", SAMPLE_REPORT, 2, TEST_KEY));
+  CHECK(strcmp(strstr(base, "sig"), strstr(other, "sig")) != 0);
+  CHECK(formatSignedWindPayload(other, sizeof(other), "a", SAMPLE_REPORT, 1, "altra-chiave"));
+  CHECK(strcmp(strstr(base, "sig"), strstr(other, "sig")) != 0);
+  const WindReport changed = {10.9f, 15.1f, 225};
+  CHECK(formatSignedWindPayload(other, sizeof(other), "a", changed, 1, TEST_KEY));
+  CHECK(strcmp(strstr(base, "sig"), strstr(other, "sig")) != 0);
 }
 
 static void testPayloadWorstCaseFitsSketchBuffer() {
   const WindReport worst = {999.9f, 999.9f, 359};
-  char buf[96];
-  CHECK(formatWindPayload(buf, sizeof(buf), "first_anemometer", worst));
+  char buf[128];
+  CHECK(formatSignedWindPayload(buf, sizeof(buf), "first_anemometer", worst, 0xFFFFFFFF, TEST_KEY));
 }
 
 static void testPayloadTooLong() {
-  char buf[96];
-  CHECK(!formatWindPayload(buf, 0, "a", SAMPLE_REPORT));
-  CHECK(formatWindPayload(buf, sizeof(buf), "a", SAMPLE_REPORT));
+  char buf[128];
+  CHECK(formatSignedWindPayload(buf, sizeof(buf), "a", SAMPLE_REPORT, 1, TEST_KEY));
   size_t full = strlen(buf);
-  CHECK(!formatWindPayload(buf, full, "a", SAMPLE_REPORT));  // un byte in meno del necessario
-  CHECK(formatWindPayload(buf, full + 1, "a", SAMPLE_REPORT));
+  CHECK(!formatSignedWindPayload(buf, 0, "a", SAMPLE_REPORT, 1, TEST_KEY));
+  CHECK(!formatSignedWindPayload(buf, full, "a", SAMPLE_REPORT, 1, TEST_KEY));  // un byte in meno
+  CHECK(formatSignedWindPayload(buf, full + 1, "a", SAMPLE_REPORT, 1, TEST_KEY));
+  CHECK(strlen(buf) == full);
+}
+
+static void testMessageCounterGrows() {
+  MessageCounter c;
+  CHECK(!c.ready());
+  c.setEpoch(1);
+  CHECK(c.ready());
+  CHECK(c.next() == 65536);
+  CHECK(c.next() == 65537);
+  c.setEpoch(2);  // riavvio: il valore supera sempre quelli dell'epoca precedente
+  CHECK(c.next() == 131072);
+}
+
+static void testMessageCounterNeedsNewEpochWhenExhausted() {
+  MessageCounter c;
+  c.setEpoch(1);
+  uint32_t last = 0;
+  for (uint32_t i = 0; i < 65536; i++) {
+    CHECK(c.ready());
+    uint32_t value = c.next();
+    if (i > 0) CHECK(value > last);
+    last = value;
+  }
+  CHECK(!c.ready());
+  CHECK(last == 0x1FFFF);
 }
 
 static bool close(float a, float b) { return a > b - 0.001f && a < b + 0.001f; }
@@ -578,9 +667,14 @@ int main() {
   testStandbyNotYetInPsmNotPulsed();
   testPsmWhileConnectedRecovers();
   testPayloadFitsAtLine();
-  testPayloadFormat();
+  testSha256Vectors();
+  testHmacVectors();
+  testSignedPayloadMatchesVector();
+  testSignatureChangesWithEveryField();
   testPayloadWorstCaseFitsSketchBuffer();
   testPayloadTooLong();
+  testMessageCounterGrows();
+  testMessageCounterNeedsNewEpochWhenExhausted();
   testGustNeedsFullWindow();
   testGustSlides();
   testGustNotSplitAcrossBlocks();

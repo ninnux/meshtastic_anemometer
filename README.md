@@ -129,10 +129,34 @@ Velocità e direzione vengono lette ogni secondo. Ogni 5 minuti parte un messagg
 Il messaggio è un CoAP POST su `coap://<server>:5683/wind`, con Content-Format `application/json`, non confermabile (NON) salvo `COAP_CONFIRMABLE`:
 
 ```json
-{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225}
+{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":65537,"sig":"3a482c440614dcc4d24ea0c6a99eed20"}
 ```
 
-`id` è `NODE_NAME` e il ricevitore lo salva come tag `sensor_name`. Il messaggio è di 98 byte con le intestazioni IP/UDP, quindi meno di 1 MB al mese, escluse la segnalazione di rete e l'overhead dell'operatore.
+`id` è `NODE_NAME` e il ricevitore lo salva come tag `sensor_name`. `n` e `sig` servono all'autenticazione. Il messaggio è di circa 150 byte con le intestazioni IP/UDP, quindi circa 1,3 MB al mese, escluse la segnalazione di rete e l'overhead dell'operatore.
+
+#### Autenticazione
+
+Ogni messaggio è firmato con **HMAC-SHA256**, troncato a 128 bit, e ogni stazione ha la sua chiave. Il ricevitore accetta solo messaggi con firma valida e contatore più alto dell'ultimo visto per quella stazione.
+
+- **Cosa protegge:** dati falsi, messaggi alterati e messaggi vecchi reinviati.
+- **Cosa non protegge:** i dati viaggiano in chiaro, quindi sono leggibili da chi intercetta il traffico. Per cifrarli servirebbe DTLS o una VPN.
+- **La firma:** copre tutti i byte del messaggio che precedono `,"sig":"`.
+- **Il contatore:** `n` è composto da un'epoca nei 16 bit alti e da una sequenza nei 16 bit bassi. L'epoca cresce a ogni avvio ed è salvata in flash (`/message_epoch.bin`) una sola volta per avvio, così la flash non si consuma a ogni invio.
+- **Sul server:** l'ultimo contatore di ogni stazione è salvato in `STATE_FILE`, così i vecchi messaggi restano scartati anche dopo un riavvio. Se il file è illeggibile il ricevitore non parte.
+
+Per configurare una stazione:
+
+```bash
+openssl rand -hex 32                                    # genera la chiave
+cp anemometro_sim7080_coap/secrets.example.h anemometro_sim7080_coap/secrets.h
+```
+
+1. In `secrets.h` metti la chiave in `STATION_KEY` e cancella la riga `#error`. Il file è escluso da git: **non committarlo**.
+2. Sul server metti in `STATION_KEYS` la coppia `NODE_NAME:chiave`, ad esempio `STATION_KEYS="first_anemometer:la_chiave,seconda_stazione:altra_chiave"`.
+
+Senza `secrets.h` lo sketch non compila. Senza chiavi sul server ogni messaggio viene rifiutato.
+
+**Se la flash della XIAO viene cancellata:** il contatore riparte da capo e il server scarta tutti i messaggi come già visti, con `contatore ... già visto` nel log. Per ripartire, ferma il ricevitore, togli la stazione da `STATE_FILE` (oppure cancella il file, se la stazione è una sola) e riavvialo. Un normale caricamento del firmware non dovrebbe cancellare il contatore, ma va verificato sulla scheda. Chi ha accesso fisico alla stazione può leggerne la chiave: in quel caso sostituiscila.
 
 Sul BLE `M` e `X` sono la media e la raffica del periodo in corso e si azzerano a ogni invio, mentre `S` è il valore istantaneo su 1 s.
 
@@ -173,6 +197,7 @@ Anemometro su `D2` e banderuola su `A3`, come nel firmware base.
 | `COAP_SERVER_IP` | `192.0.2.1` | **Segnaposto, da sostituire.** IP o hostname del server con `collector_coap.py` |
 | `COAP_SERVER_PORT` | `5683` | Porta UDP del server |
 | `NODE_NAME` | `first_anemometer` | Nome della stazione: lettere, numeri, `_` e `-`, massimo 32 caratteri |
+| `STATION_KEY` | in `secrets.h` | Chiave della stazione, fuori dal repository |
 | `COAP_CONFIRMABLE` | `false` | `true` usa messaggi CON e rileva anche un server spento, con una conferma per ogni messaggio |
 | `REPORT_PERIOD_S` | `300` | Secondi tra due invii |
 | `DebounceMs` | `40` | Debounce del contatto reed |
@@ -213,6 +238,8 @@ INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 
 | Variabile d'ambiente | Predefinito | Significato |
 |---|---|---|
+| `STATION_KEYS` | nessuno | Chiavi delle stazioni, `nome:chiave,nome:chiave`, di almeno 32 caratteri; senza, ogni messaggio viene rifiutato |
+| `STATE_FILE` | nessuno | File con i contatori; senza, dopo un riavvio i vecchi messaggi tornano validi |
 | `INFLUX_URL` | nessuno | URL di InfluxDB; senza, stampa soltanto i dati |
 | `INFLUX_TOKEN` | nessuno | Token di InfluxDB |
 | `INFLUX_ORG` | `meteo_org` | Organizzazione |
@@ -220,15 +247,15 @@ INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 | `COAP_BIND` | `::` | Indirizzo di ascolto |
 | `COAP_PORT` | `5683` | Porta UDP di ascolto |
 
-Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario è quello di ricezione e i valori si riferiscono ai 5 minuti precedenti. I messaggi malformati vengono scartati e registrati nel log. Ai messaggi NON non risponde, per non consumare traffico; a quelli CON risponde `2.04` oppure `4.00`.
+Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario è quello di ricezione e i valori si riferiscono ai 5 minuti precedenti. I messaggi scartati vengono registrati nel log. Ai messaggi NON non risponde, per non consumare traffico; a quelli CON risponde `2.04`, `4.00` se il messaggio è malformato o `4.01` se la firma o il contatore non sono validi.
 
-La porta UDP deve essere raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque raggiunga la porta può inviare dati a nome di una stazione. Una SIM con APN privata o una VPN risolverebbe il problema.
+La porta UDP deve essere raggiungibile da Internet. Il traffico non è cifrato: per nasconderlo servirebbe una VPN o un APN privato.
 
 Per il server è consigliata la versione in Go, descritta in [Ricevitore in Go e deploy su Devuan](#ricevitore-in-go-e-deploy-su-devuan).
 
 #### Test sul computer
 
-Provano il driver con un modem simulato, il payload e il calcolo della raffica. Non provano lo sketch `.ino` né l'hardware. Dalla cartella `anemometro_sim7080_coap/`:
+Provano il driver con un modem simulato, il payload, il calcolo della raffica, la firma e il contatore. Non provano lo sketch `.ino` né l'hardware. Dalla cartella `anemometro_sim7080_coap/`:
 
 ```bash
 g++ -std=c++17 -Itest -I. test/test_sim7080.cpp sim7080.cpp -o /tmp/test_sim7080 && /tmp/test_sim7080
@@ -247,6 +274,7 @@ Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Ma
 5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare un solo impulso, anche con il debounce a 40 ms.
 6. **Taratura:** la formula vale per un vero Davis. Un confronto con un anemometro portatile è il controllo più affidabile.
 7. **Consumo:** misura la corrente del modem per vedere quanto dorme davvero.
+8. **Contatore in flash:** l'epoca deve crescere a ogni riavvio, anche dopo un caricamento del firmware. La lettura e la scrittura in flash non sono coperte dai test sul computer.
 
 Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, ma per verificare il PSM serve un periodo più lungo.
 
@@ -256,7 +284,7 @@ Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP invi
 
 - **Binario unico:** è statico, quindi sul server non servono Python né librerie.
 - **InfluxDB fermo:** i punti restano in memoria con il loro orario e vengono riscritti quando torna raggiungibile. La coda contiene 2048 punti, circa una settimana per una stazione; a coda piena si perdono i più vecchi. Se il server viene fermato mentre InfluxDB è irraggiungibile, i punti in coda vanno persi.
-- **Messaggi duplicati:** un messaggio duplicato dalla rete viene scritto una sola volta.
+- **Autenticazione:** come la versione Python, verifica firma e contatore, con `STATION_KEYS` e `STATE_FILE`.
 
 Serve Go 1.22 o più recente sul computer da cui si fa il deploy. Il token non compare mai sulla riga di comando del processo.
 
@@ -277,14 +305,15 @@ Devuan usa di default sysvinit, quindi il servizio è uno script in `/etc/init.d
 |---|---|
 | `/usr/local/bin/anemometer-collector` | Binario |
 | `/etc/init.d/anemometer-collector` | Servizio, avviato al boot |
-| `/etc/default/anemometer-collector` | Configurazione con il token, permessi `640` |
+| `/etc/default/anemometer-collector` | Configurazione con token e chiavi, permessi `640` |
+| `/var/lib/anemometer-collector/counters.json` | Contatori dei messaggi, conservati tra un deploy e l'altro |
 | `/var/log/anemometer-collector/collector.log` | Log, ruotato ogni settimana da `/etc/logrotate.d/anemometer-collector` |
 
 Il servizio gira con l'utente di sistema `anemometer`, senza privilegi di root.
 
 Dopo il primo deploy:
 
-1. inserisci `INFLUX_URL` e `INFLUX_TOKEN` in `/etc/default/anemometer-collector`: finché `INFLUX_URL` è vuoto, i dati finiscono solo nel log;
+1. inserisci `INFLUX_URL`, `INFLUX_TOKEN` e `STATION_KEYS` in `/etc/default/anemometer-collector`: finché `STATION_KEYS` è vuoto ogni messaggio viene rifiutato, e finché `INFLUX_URL` è vuoto i dati finiscono solo nel log;
 2. riavvia con `service anemometer-collector restart`;
 3. apri la porta UDP 5683 sul firewall del server, perché lo script non tocca il firewall.
 
