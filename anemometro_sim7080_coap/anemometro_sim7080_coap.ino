@@ -17,6 +17,8 @@
 #define WindSensorPin  2
 #define WindVanePin    A3
 #define VaneOffset     0
+// 35 kn = 45 impulsi/s = uno ogni 22 ms; con 20 ms il limite e' circa 37 kn
+#define DebounceMs     20
 
 // ── Modem (Serial1: RX=D7, TX=D6) ────────────────────────────
 #define MODEM_BAUD_RATE     115200
@@ -354,7 +356,7 @@ void isr_timer_cb(TimerHandle_t xTimerID) {
 // ============================================================
 void isr_rotation() {
   uint32_t now = millis();
-  if ((now - ContactBounceTime) > 55) {
+  if ((now - ContactBounceTime) > DebounceMs) {
     Rotations++;
     ContactBounceTime = now;
   }

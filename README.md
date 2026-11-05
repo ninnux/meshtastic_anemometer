@@ -100,7 +100,7 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 Il messaggio è di circa 100 byte con le intestazioni IP/UDP, quindi meno di 1 MB al mese escluso l'overhead dell'operatore.
 
-**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
+**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. Con il fattore attuale (0.9, cioè 0,78 kn per impulso al secondo) il debounce di 20 ms (`DebounceMs`) permette di leggere fino a circa 37 kn. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
 
 **Risparmio energetico (PSM):** il modem non si spegne: resta registrato in rete e dopo ogni invio torna a dormire con il Power Saving Mode (`AT+CPSMS`), con o senza vento.
 
