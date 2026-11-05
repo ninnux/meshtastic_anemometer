@@ -562,18 +562,39 @@ static void testPayloadTooLong() {
 
 static void testMessageCounterGrows() {
   MessageCounter c;
+  c.restore(0);
   CHECK(!c.ready());
-  c.setEpoch(1);
+  CHECK(!c.exhausted());
+  CHECK(c.nextEpoch() == 1);
+  c.epochSaved();
   CHECK(c.ready());
   CHECK(c.next() == 65536);
   CHECK(c.next() == 65537);
-  c.setEpoch(2);  // riavvio: il valore supera sempre quelli dell'epoca precedente
-  CHECK(c.next() == 131072);
+
+  // Riavvio: il valore supera sempre quelli dell'epoca precedente
+  MessageCounter rebooted;
+  rebooted.restore(1);
+  CHECK(rebooted.nextEpoch() == 2);
+  rebooted.epochSaved();
+  CHECK(rebooted.next() == 131072);
+}
+
+// Senza un invio l'epoca non avanza: un ciclo di riavvii non consuma nulla
+static void testRestoreDoesNotConsumeEpoch() {
+  MessageCounter c;
+  c.restore(1);
+  c.epochSaved();
+  for (int boot = 0; boot < 3; boot++) {
+    c.restore(7);
+    CHECK(!c.ready());
+    CHECK(c.nextEpoch() == 8);
+  }
 }
 
 static void testMessageCounterNeedsNewEpochWhenExhausted() {
   MessageCounter c;
-  c.setEpoch(1);
+  c.restore(0);
+  c.epochSaved();
   uint32_t last = 0;
   for (uint32_t i = 0; i < 65536; i++) {
     CHECK(c.ready());
@@ -582,7 +603,28 @@ static void testMessageCounterNeedsNewEpochWhenExhausted() {
     last = value;
   }
   CHECK(!c.ready());
+  CHECK(!c.exhausted());  // basta un'epoca nuova
   CHECK(last == 0x1FFFF);
+  CHECK(c.nextEpoch() == 2);
+  c.epochSaved();
+  CHECK(c.next() > last);
+}
+
+// All'ultima epoca si invia fino alla fine, poi ci si ferma senza ripartire da zero
+static void testLastEpochStopsWithoutWrapping() {
+  MessageCounter c;
+  c.restore(0xFFFE);
+  CHECK(!c.exhausted());
+  c.epochSaved();
+  CHECK(!c.exhausted());  // l'ultima epoca e' ancora utilizzabile
+  CHECK(c.next() == 0xFFFF0000);
+  for (uint32_t i = 1; i < 65536; i++) c.next();
+  CHECK(!c.ready());
+  CHECK(c.exhausted());
+
+  MessageCounter rebooted;
+  rebooted.restore(0xFFFF);
+  CHECK(rebooted.exhausted());
 }
 
 static bool close(float a, float b) { return a > b - 0.001f && a < b + 0.001f; }
@@ -674,7 +716,9 @@ int main() {
   testPayloadWorstCaseFitsSketchBuffer();
   testPayloadTooLong();
   testMessageCounterGrows();
+  testRestoreDoesNotConsumeEpoch();
   testMessageCounterNeedsNewEpochWhenExhausted();
+  testLastEpochStopsWithoutWrapping();
   testGustNeedsFullWindow();
   testGustSlides();
   testGustNotSplitAcrossBlocks();

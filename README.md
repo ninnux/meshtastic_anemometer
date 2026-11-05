@@ -323,12 +323,14 @@ Ogni messaggio è firmato con **HMAC-SHA256**, troncato a 128 bit, e ogni stazio
 - **Cosa protegge:** dati falsi, messaggi alterati e messaggi vecchi reinviati.
 - **Cosa non protegge:** i dati viaggiano in chiaro, quindi sono leggibili da chi intercetta il traffico. Per cifrarli servirebbe DTLS o una VPN.
 - **La firma:** copre tutti i byte del messaggio che precedono `,"sig":"`.
-- **Il contatore:** `n` è composto da un'epoca nei 16 bit alti e da una sequenza nei 16 bit bassi. L'epoca cresce a ogni avvio ed è salvata in flash (`/message_epoch.bin`) una sola volta per avvio, così la flash non si consuma a ogni invio.
+- **Il contatore:** `n` è composto da un'epoca nei 16 bit alti e da una sequenza nei 16 bit bassi. L'epoca è salvata in flash (`/message_epoch.bin`, 4 byte) solo al primo invio riuscito a connettersi dopo un avvio e ogni 65536 messaggi, circa 227 giorni. I riavvii senza invii non consumano epoche né flash.
+- **Limiti del contatore:** ci sono 65535 epoche, ma la flash dovrebbe usurarsi prima: le prove con il filesystem della scheda mostrano fino a 2,5 cancellazioni della stessa zona per salvataggio, e la flash è garantita per circa 10.000 cancellazioni, quindi conviene contare su circa 4000 salvataggi. Con un riavvio al giorno sono più di 10 anni, ma riavvii frequenti con invio li consumano prima.
+- **Contatore esaurito o illeggibile:** il firmware non riparte da zero, perché il server scarterebbe tutto. Sospende gli invii senza svegliare il modem e lo segnala sul monitor seriale con `invii sospesi`. Se invece non riesce a scrivere in flash, riprova a ogni invio e segnala `Contatore non salvato in flash`.
 - **Sul server:** l'ultimo contatore di ogni stazione è salvato in `STATE_FILE`, così i vecchi messaggi restano scartati anche dopo un riavvio. Se il file è illeggibile il ricevitore non parte.
 
 Per generare le chiavi e aggiungere stazioni vedi [Installazione](#installazione). Senza `secrets.h` lo sketch non compila. Senza chiavi sul server ogni messaggio viene rifiutato.
 
-**Se la flash della XIAO viene cancellata:** il contatore riparte da capo e il server scarta tutti i messaggi come già visti, con `contatore ... già visto` nel log. Per ripartire, ferma il ricevitore, togli la stazione da `STATE_FILE` (oppure cancella il file, se la stazione è una sola) e riavvialo. Un normale caricamento del firmware non dovrebbe cancellare il contatore, ma va verificato sulla scheda. Chi ha accesso fisico alla stazione può leggerne la chiave: in quel caso sostituiscila.
+**Se la flash della XIAO viene cancellata o il contatore è esaurito:** il contatore riparte da capo e il server scarta tutti i messaggi come già visti, con `contatore ... già visto` nel log. Per ripartire, cancella il file del contatore dalla scheda, se serve; poi ferma il ricevitore, togli la stazione da `STATE_FILE` (oppure cancella il file, se la stazione è una sola) e riavvialo. Un normale caricamento del firmware non dovrebbe cancellare il contatore, ma va verificato sulla scheda. Chi ha accesso fisico alla stazione può leggerne la chiave: in quel caso sostituiscila.
 
 Sul BLE `M` e `X` sono la media e la raffica del periodo in corso e si azzerano a ogni invio, mentre `S` è il valore istantaneo su 1 s.
 
@@ -446,7 +448,7 @@ Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Ma
 5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare un solo impulso, anche con il debounce a 40 ms.
 6. **Taratura:** la formula vale per un vero Davis. Un confronto con un anemometro portatile è il controllo più affidabile.
 7. **Consumo:** misura la corrente del modem per vedere quanto dorme davvero.
-8. **Contatore in flash:** l'epoca deve crescere a ogni riavvio, anche dopo un caricamento del firmware. La lettura e la scrittura in flash non sono coperte dai test sul computer.
+8. **Contatore in flash:** dopo un riavvio con invio `n` deve crescere di almeno 65536, anche dopo un caricamento del firmware. La sequenza di scrittura è stata provata sul computer con il LittleFS del BSP, simulando interruzioni di corrente, ma non con il driver della flash della scheda.
 
 Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, ma per verificare il PSM serve un periodo più lungo.
 

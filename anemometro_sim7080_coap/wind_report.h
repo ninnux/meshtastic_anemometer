@@ -48,18 +48,29 @@ private:
   uint8_t  _count = 0;
 };
 
-// Contatore sempre crescente, anche dopo un riavvio: la parte alta (epoca) e'
-// salvata in flash una volta per avvio, cosi' la flash non si consuma a ogni invio.
+// Contatore sempre crescente, anche dopo un riavvio: la parte alta (epoca) e' salvata
+// in flash solo al primo invio dopo un avvio e dopo 65536 messaggi (circa 227 giorni).
 class MessageCounter {
 public:
-  void setEpoch(uint16_t epoch) {
-    _epoch = epoch;
+  // Ultima epoca salvata in flash, 0 se non ce n'e' ancora una
+  void restore(uint16_t lastEpoch) {
+    _epoch = lastEpoch;
+    _ready = false;
+  }
+
+  // Serve salvare nextEpoch() in flash prima di usare next()
+  bool ready() const { return _ready; }
+
+  // Non si riparte da zero: il server scarterebbe tutti i messaggi come gia' visti
+  bool exhausted() const { return !_ready && _epoch == 0xFFFF; }
+
+  uint16_t nextEpoch() const { return _epoch + 1; }
+
+  void epochSaved() {
+    _epoch = nextEpoch();
     _sequence = 0;
     _ready = true;
   }
-
-  // false se serve una nuova epoca: all'avvio e dopo 65536 messaggi (circa 227 giorni)
-  bool ready() const { return _ready; }
 
   uint32_t next() {
     uint32_t value = ((uint32_t)_epoch << 16) | _sequence;

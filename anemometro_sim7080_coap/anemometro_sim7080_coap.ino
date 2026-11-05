@@ -40,7 +40,8 @@ using namespace Adafruit_LittleFS_Namespace;
 // ── Invio ────────────────────────────────────────────────────
 #define REPORT_PERIOD_S 300
 #define FAILS_TO_RESET  3  // errori consecutivi prima dello spegnimento completo
-#define COUNTER_FILE    "/message_epoch.bin"
+#define COUNTER_FILE     "/message_epoch.bin"
+#define COUNTER_TEMP_FILE "/message_epoch.tmp"
 
 // ── BLE ──────────────────────────────────────────────────────
 BLEService        windService("A0010000-0001-0001-0001-000000000001");
@@ -87,6 +88,7 @@ QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vin
 
 Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
 MessageCounter messageCounter;
+bool counterLoaded = false;
 
 // ── Prototipi ────────────────────────────────────────────────
 void isr_timer_cb(TimerHandle_t xTimerID);
@@ -96,7 +98,8 @@ int  meanWindDirection();
 void queueReport();
 void modemLoop();
 bool sendReport(const WindReport& report);
-bool startCounterEpoch();
+bool loadCounterEpoch();
+bool saveCounterEpoch();
 void setupBLE();
 void updateBLE();
 void startAdvertising();
@@ -126,7 +129,7 @@ void setup() {
   setupBLE();
 
   InternalFS.begin();
-  if (!startCounterEpoch()) Serial.println("Contatore messaggi non salvato in flash");
+  counterLoaded = loadCounterEpoch();
 
   lastAdvStart = millis() - ADV_PERIOD_MS;
 
@@ -248,6 +251,16 @@ void modemLoop() {
   WindReport report;
   if (xQueueReceive(reportQueue, &report, portMAX_DELAY) != pdTRUE) return;
 
+  // Senza contatore il messaggio verrebbe scartato: non si spreca energia col modem
+  if (!counterLoaded) {
+    Serial.println("Contatore in flash illeggibile: invii sospesi, vedi README");
+    return;
+  }
+  if (messageCounter.exhausted()) {
+    Serial.println("Contatore esaurito: invii sospesi, vedi README");
+    return;
+  }
+
   Serial1.begin(MODEM_BAUD_RATE);
 
   bool sent = false;
@@ -273,8 +286,8 @@ bool sendReport(const WindReport& report) {
   // scambi i messaggi dopo una riaccensione per duplicati di quelli precedenti.
   static uint16_t messageId = (uint16_t)millis();
 
-  if (!messageCounter.ready() && !startCounterEpoch()) {
-    Serial.println("Contatore messaggi non disponibile: report non inviato");
+  if (!messageCounter.ready() && !saveCounterEpoch()) {
+    Serial.println("Contatore non salvato in flash: report non inviato");
     return false;
   }
 
@@ -293,26 +306,39 @@ bool sendReport(const WindReport& report) {
 }
 
 // Il server scarta i contatori gia' visti: l'epoca deve crescere a ogni avvio.
-// Si aggiunge in coda invece di riscrivere: un guasto a meta' non la azzera.
-bool startCounterEpoch() {
-  uint32_t last = 0;
-  uint32_t value;
-  File file(InternalFS);
-  if (file.open(COUNTER_FILE, FILE_O_READ)) {
-    while (file.read(&value, sizeof(value)) == sizeof(value)) {
-      if (value > last) last = value;
-    }
-    file.close();
+// Un file illeggibile blocca gli invii: ripartire da zero non servirebbe.
+bool loadCounterEpoch() {
+  if (!InternalFS.exists(COUNTER_FILE)) {
+    messageCounter.restore(0);
+    return true;
   }
 
-  uint32_t epoch = last + 1;
-  if (epoch > 0xFFFF) return false;
-  if (!file.open(COUNTER_FILE, FILE_O_WRITE)) return false;
-  bool saved = file.write((const uint8_t*)&epoch, sizeof(epoch)) == sizeof(epoch);
+  File file(InternalFS);
+  if (!file.open(COUNTER_FILE, FILE_O_READ)) return false;
+  uint32_t epoch = 0;
+  bool valid = file.size() == sizeof(epoch)
+            && file.read(&epoch, sizeof(epoch)) == sizeof(epoch)
+            && epoch <= 0xFFFF;
   file.close();
 
-  if (saved) messageCounter.setEpoch((uint16_t)epoch);
-  return saved;
+  if (valid) messageCounter.restore((uint16_t)epoch);
+  return valid;
+}
+
+// Salvato solo al primo invio: riavvii ripetuti senza invii non consumano ne' epoche
+// ne' flash. File temporaneo e rinomina: un'interruzione a meta' lascia il valore vecchio.
+bool saveCounterEpoch() {
+  uint32_t epoch = messageCounter.nextEpoch();
+
+  InternalFS.remove(COUNTER_TEMP_FILE);
+  File file(InternalFS);
+  if (!file.open(COUNTER_TEMP_FILE, FILE_O_WRITE)) return false;
+  bool written = file.write((const uint8_t*)&epoch, sizeof(epoch)) == sizeof(epoch);
+  file.close();
+
+  if (!written || !InternalFS.rename(COUNTER_TEMP_FILE, COUNTER_FILE)) return false;
+  messageCounter.epochSaved();
+  return true;
 }
 
 // ============================================================
