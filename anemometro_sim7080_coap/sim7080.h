@@ -1,7 +1,8 @@
 // ============================================================
-// sim7080.h – Driver AT minimo per SIM7080G: invio datagrammi UDP
-// Riferimento: SIM7070_SIM7080_SIM7090 Series TCPUDP(S)
-// Application Note V1.03
+// sim7080.h – Driver AT minimo per SIM7080G: invio con il client
+// CoAP del modem.
+// Riferimento: SIM7070_SIM7080_SIM7090 Series AT Command Manual
+// V1.05, capitolo 18
 // ============================================================
 #pragma once
 
@@ -9,30 +10,32 @@
 
 class Sim7080 {
 public:
-  // pwrkeyPin < 0 se la scheda accende il modem da sola.
-  Sim7080(Stream& at, int pwrkeyPin, uint8_t pwrkeyActive);
+  Sim7080(Stream& at, uint8_t pwrkeyPin, uint8_t pwrkeyActive);
 
   void begin();
 
   // Bloccante (fino a qualche minuto): accende il modem se serve,
-  // attende la rete, attiva la PDP e apre il socket UDP.
+  // attende la rete, attiva la PDP e prepara il client CoAP.
   bool connect(const char* apn, const char* host, uint16_t port);
   bool connected() const { return _connected; }
 
-  // Una risposta OK significa "passato al modem", non "ricevuto dal server".
-  bool send(const uint8_t* data, size_t len);
+  // POST su path. Con confirmable=false, true significa "passato al modem";
+  // con confirmable=true significa che il server ha risposto.
+  bool coapPost(uint16_t messageId, const char* path, uint8_t contentFormat,
+                const char* payload, bool confirmable);
 
-  // Interroga la PDP: UDP non segnala da solo la perdita della rete.
+  // Interroga la PDP: i messaggi NON non segnalano la perdita della rete.
   bool checkLink();
 
-  // Impulso su PWRKEY: accende il modem se e' spento, altrimenti lo spegne.
-  void togglePower();
+  void powerOff();
 
 private:
+  void pulsePwrkey();
+  void handleUrc();
   void flushInput();
   void sendCmd(const char* cmd);
+  bool lineStartsWith(const char* token) const;
   bool waitLine(const char* ok, const char* fail, uint32_t timeoutMs);
-  bool waitPrompt(uint32_t timeoutMs);
   bool command(const char* cmd, uint32_t timeoutMs = 2000);
   bool query(const char* cmd, const char* expected, uint32_t timeoutMs = 2000);
   bool isAlive();
@@ -43,9 +46,9 @@ private:
   bool activatePdp(const char* apn);
 
   Stream& _at;
-  int     _pwrkeyPin;
+  uint8_t _pwrkeyPin;
   uint8_t _pwrkeyActive;
-  bool    _connected  = false;
-  bool    _configured = false;
+  bool    _connected = false;
   char    _line[96];
+  size_t  _lineLen   = 0;
 };

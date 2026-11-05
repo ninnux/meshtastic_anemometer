@@ -1,12 +1,12 @@
-// Test sul computer della codifica CoAP e del driver SIM7080 con un modem simulato.
+// Test sul computer del driver SIM7080 con un modem simulato e della gestione accensione.
 // Dalla cartella anemometro_sim7080_coap:
 //   g++ -std=c++17 -Itest -I. test/test_sim7080.cpp sim7080.cpp -o /tmp/test_sim7080 && /tmp/test_sim7080
 // Se su macOS non trova gli header C++, aggiungere:
 //   -isysroot $(xcrun --show-sdk-path) -I$(xcrun --show-sdk-path)/usr/include/c++/v1
-// Con --dump stampa in esadecimale il datagramma per il test contro un server reale.
+#include <stdlib.h>
 #include <vector>
 #include "Arduino.h"
-#include "coap.h"
+#include "modem_power.h"
 #include "sim7080.h"
 
 uint32_t fakeMillis = 0;
@@ -24,11 +24,13 @@ public:
   bool simReady = true;
   int attachAfterPolls = 0;
   bool pdpActive = false;
-  bool openOk = true;
-  bool sendOk = true;
+  bool apnStored = false;
+  bool answersPowerOff = true;
+  bool coapOk = true;
+  int actionError = 0;
+  bool serverAnswers = true;
   std::string urcBeforeReply;
   std::vector<std::string> commands;
-  std::vector<uint8_t> datagram;
 
   int available() override { return rx.size(); }
   int read() override {
@@ -43,24 +45,27 @@ public:
   }
   void togglePower() {
     powered = !powered;
+    pdpActive = false;
+    rx.clear();
     if (powered) bootAt = fakeMillis + 3000;
   }
+  void injectUrc(const std::string& urc) { rx += urc; }
   int count(const std::string& prefix) const {
     int n = 0;
     for (auto& c : commands) if (c.rfind(prefix, 0) == 0) n++;
     return n;
   }
+  std::string last(const std::string& prefix) const {
+    for (auto it = commands.rbegin(); it != commands.rend(); ++it) {
+      if (it->rfind(prefix, 0) == 0) return *it;
+    }
+    return "";
+  }
 
 private:
   std::string rx, cmd;
-  size_t dataLeft = 0;
 
   void onByte(uint8_t b) {
-    if (dataLeft > 0) {
-      datagram.push_back(b);
-      if (--dataLeft == 0) rx += sendOk ? "\r\nOK\r\n" : "\r\nERROR\r\n";
-      return;
-    }
     if (b != '\r') { cmd += (char)b; return; }
     std::string c = cmd;
     cmd.clear();
@@ -75,18 +80,35 @@ private:
       rx += simReady ? "\r\n+CPIN: READY\r\n\r\nOK\r\n" : "\r\n+CPIN: NOT READY\r\n\r\nOK\r\n";
     } else if (c == "AT+CGATT?") {
       rx += attachAfterPolls-- <= 0 ? "\r\n+CGATT: 1\r\n\r\nOK\r\n" : "\r\n+CGATT: 0\r\n\r\nOK\r\n";
+    } else if (c == "AT+CGDCONT?") {
+      if (apnStored) rx += "\r\n+CGDCONT: 1,\"IP\",\"internet\",\"0.0.0.0\",0,0,0,0\r\n";
+      rx += "\r\nOK\r\n";
+    } else if (c.rfind("AT+CGDCONT=", 0) == 0) {
+      apnStored = true;
+      rx += "\r\nOK\r\n";
     } else if (c == "AT+CNACT?") {
-      rx += pdpActive ? "\r\n+CNACT: 0,1,\"10.0.0.2\"\r\n" : "\r\n+CNACT: 0,0,\"0.0.0.0\"\r\n";
+      // Il manuale riporta questa risposta sia con sia senza spazio
+      rx += pdpActive ? "\r\n+CNACT:0,1,\"10.0.0.2\"\r\n" : "\r\n+CNACT:0,0,\"0.0.0.0\"\r\n";
       rx += "+CNACT: 1,0,\"0.0.0.0\"\r\n\r\nOK\r\n";
     } else if (c == "AT+CNACT=0,1") {
       pdpActive = true;
       rx += "\r\nOK\r\n\r\n+APP PDP: 0,ACTIVE\r\n";
-    } else if (c.rfind("AT+CAOPEN=", 0) == 0) {
-      rx += openOk ? "\r\n+CAOPEN: 0,0\r\n\r\nOK\r\n" : "\r\n+CAOPEN: 0,1\r\n\r\nOK\r\n";
-    } else if (c.rfind("AT+CASEND=0,", 0) == 0) {
-      if (!sendOk) { rx += "\r\nERROR\r\n"; return; }
-      dataLeft = atoi(c.c_str() + strlen("AT+CASEND=0,"));
-      rx += "\r\n> ";
+    } else if (c == "AT+CPOWD=1") {
+      if (!answersPowerOff) return;
+      powered = false;
+      pdpActive = false;
+      rx += "\r\nNORMAL POWER DOWN\r\n";
+    } else if (c.rfind("AT+CCOAPPARA=", 0) == 0) {
+      rx += coapOk ? "\r\nOK\r\n" : "\r\nERROR\r\n";
+    } else if (c == "AT+CCOAPACTION") {
+      if (actionError) {
+        rx += "\r\n+CCOAPACTION: " + std::to_string(actionError) + ",7\r\n\r\nOK\r\n";
+      } else {
+        rx += "\r\n+CCOAPACTION: 0,7\r\n\r\nOK\r\n";
+        if (serverAnswers && last("AT+CCOAPPARA").find("\"CON\"") != std::string::npos) {
+          rx += "\r\n+CCOAPRECV: 7,6,0\r\n";
+        }
+      }
     } else {
       rx += "\r\nOK\r\n";
     }
@@ -116,43 +138,10 @@ static void reset(FakeModem& m) {
   activeModem = &m;
 }
 
-static std::vector<uint8_t> encodeSample(uint16_t id) {
-  const char* payload = "{\"mean\":10.8,\"max\":15.1,\"dir\":225}";
-  uint8_t buf[96];
-  size_t n = coapBuildNonPost(buf, sizeof(buf), id, "wind/first_anemometer",
-                              COAP_CONTENT_FORMAT_JSON, payload, strlen(payload));
-  return std::vector<uint8_t>(buf, buf + n);
-}
+static const char* PAYLOAD = "{\"id\":\"a\",\"dir\":225}";
+static const char* PAYLOAD_HEX = "7b226964223a2261222c22646972223a3232357d";
 
-static void testCoapBytes() {
-  uint8_t buf[64];
-  size_t n = coapBuildNonPost(buf, sizeof(buf), 0x1234, "wind/abc", 50, "x", 1);
-  const uint8_t expected[] = {0x50, 0x02, 0x12, 0x34, 0xB4, 'w', 'i', 'n', 'd',
-                              0x03, 'a', 'b', 'c', 0x11, 50, 0xFF, 'x'};
-  CHECK(n == sizeof(expected));
-  CHECK(memcmp(buf, expected, sizeof(expected)) == 0);
-}
-
-static void testCoapLongSegment() {
-  uint8_t buf[64];
-  size_t n = coapBuildNonPost(buf, sizeof(buf), 1, "first_anemometer", 50, "", 0);
-  const uint8_t head[] = {0x50, 0x02, 0x00, 0x01, 0xBD, 16 - 13};
-  CHECK(n == 6 + 16 + 2);  // senza payload non c'e' il marcatore 0xFF
-  CHECK(memcmp(buf, head, sizeof(head)) == 0);
-  CHECK(buf[6 + 16] == 0x11);
-}
-
-static void testCoapRejects() {
-  uint8_t buf[96];
-  for (size_t cap = 0; cap < encodeSample(1).size(); cap++) {
-    CHECK(coapBuildNonPost(buf, cap, 1, "wind/first_anemometer", 50,
-                           "{\"mean\":10.8,\"max\":15.1,\"dir\":225}", 34) == 0);
-  }
-  CHECK(coapBuildNonPost(buf, sizeof(buf), 1, "wind//x", 50, "", 0) == 0);
-  CHECK(coapBuildNonPost(buf, sizeof(buf), 1, "", 50, "", 0) == 0);
-}
-
-static void testColdBootConnectAndSend() {
+static void testColdBootConnectAndPost() {
   FakeModem m; reset(m);
   m.powered = false;
   m.attachAfterPolls = 2;
@@ -162,15 +151,16 @@ static void testColdBootConnectAndSend() {
   CHECK(pwrkeyPulses == 1);
   CHECK(m.count("AT+CGDCONT=1,\"IP\",\"internet\"") == 1);
   CHECK(m.count("AT+CNCFG=0,1,\"internet\"") == 1);
-  CHECK(m.count("AT+CAOPEN=0,0,\"UDP\",\"192.0.2.1\",5683") == 1);
+  CHECK(m.count("AT+CCOAPINIT") == 1);
+  CHECK(m.count("AT+CCOAPURL=\"coap://192.0.2.1:5683\"") == 1);
   CHECK(m.count("AT+CGATT?") == 3);
 
-  auto d = encodeSample(7);
-  CHECK(modem.send(d.data(), d.size()));
-  CHECK(m.datagram == d);
-  char expected[32];
-  snprintf(expected, sizeof(expected), "AT+CASEND=0,%u", (unsigned)d.size());
-  CHECK(m.count(expected) == 1);
+  CHECK(modem.coapPost(513, "wind", 50, PAYLOAD, false));
+  std::string expected = std::string("AT+CCOAPPARA=\"CODE\",2,\"TYPE\",\"NON\",\"MID\",513,"
+                                     "\"URI-PATH\",0,\"wind\",\"CONTENT-FORMAT\",50,\"PAYLOAD\",1,\"")
+                         + PAYLOAD_HEX + "\"";
+  CHECK(m.last("AT+CCOAPPARA") == expected);
+  CHECK(m.count("AT+CCOAPACTION") == 1);
   CHECK(modem.connected());
 }
 
@@ -184,19 +174,22 @@ static void testRunningModemNotPulsed() {
   CHECK(m.count("AT+CNACT=0,1") == 0);
 }
 
-static void testApnConfiguredOncePerBoot() {
+// Con l'APN gia' salvato si evita CFUN, che allungherebbe ogni riaccensione
+static void testStoredApnSkipsCfun() {
   FakeModem m; reset(m);
+  m.apnStored = true;
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  CHECK(modem.connect(APN, HOST, 5683));
-  CHECK(m.count("AT+CGDCONT") == 1);
+  CHECK(m.count("AT+CFUN") == 0);
+  CHECK(m.count("AT+CGDCONT=") == 0);
 }
 
 static void testModemDead() {
   FakeModem m; reset(m);
   m.powered = false;
   m.bootAt = 0xFFFFFFFF;
-  Sim7080 modem(m, -1, HIGH);
+  activeModem = nullptr;  // l'impulso non ha effetto
+  Sim7080 modem(m, 1, HIGH);
   CHECK(!modem.connect(APN, HOST, 5683));
   CHECK(!modem.connected());
   CHECK(fakeMillis < 60000);
@@ -218,34 +211,76 @@ static void testNoNetworkTimesOut() {
   CHECK(fakeMillis >= 180000 && fakeMillis < 200000);
 }
 
-static void testOpenFails() {
-  FakeModem m; reset(m);
-  m.openOk = false;
-  Sim7080 modem(m, 1, HIGH);
-  CHECK(!modem.connect(APN, HOST, 5683));
-  CHECK(!modem.connected());
-  CHECK(fakeMillis < 30000);  // deve riconoscere l'errore, non scadere il timeout
-}
-
-static void testSendErrorMarksDisconnected() {
+static void testPostParaErrorMarksDisconnected() {
   FakeModem m; reset(m);
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  m.sendOk = false;
-  auto d = encodeSample(1);
-  CHECK(!modem.send(d.data(), d.size()));
+  m.coapOk = false;
+  CHECK(!modem.coapPost(1, "wind", 50, PAYLOAD, false));
   CHECK(!modem.connected());
-  CHECK(m.datagram.empty());
+  CHECK(m.count("AT+CCOAPACTION") == 0);
+}
+
+static void testActionErrorMarksDisconnected() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  m.actionError = 3;
+  CHECK(!modem.coapPost(1, "wind", 50, PAYLOAD, false));
+  CHECK(!modem.connected());
+}
+
+static void testOversizedPayloadRejected() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  std::string big(200, 'x');
+  CHECK(!modem.coapPost(1, "wind", 50, big.c_str(), false));
+  CHECK(m.count("AT+CCOAPPARA") == 0);
+}
+
+static void testConfirmableAcknowledged() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, true));
+  CHECK(m.last("AT+CCOAPPARA").find("\"TYPE\",\"CON\"") != std::string::npos);
+  CHECK(m.count("AT+CCOAPACTION=5") == 1);
+  CHECK(modem.connected());
+}
+
+static void testConfirmableServerSilent() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  m.serverAnswers = false;
+  uint32_t start = fakeMillis;
+  CHECK(!modem.coapPost(1, "wind", 50, PAYLOAD, true));
+  CHECK(!modem.connected());
+  CHECK(fakeMillis - start < 120000);
 }
 
 static void testUrcsAreIgnored() {
   FakeModem m; reset(m);
-  m.urcBeforeReply = "\r\n+CADATAIND: 0\r\n";
+  m.urcBeforeReply = "\r\n+CCOAPRECV: 1,14,9\r\n";
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  auto d = encodeSample(1);
-  CHECK(modem.send(d.data(), d.size()));
-  CHECK(m.datagram == d);
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+  CHECK(modem.connected());
+}
+
+// Un URC arrivato tra due invii non deve andare perso con lo svuotamento del buffer
+static void testUrcBetweenPostsDetected() {
+  const char* urcs[] = {"\r\n+APP PDP: 0,DEACTIVE\r\n", "\r\n+CCOAPACTION: 3\r\n"};
+  for (const char* urc : urcs) {
+    FakeModem m; reset(m);
+    Sim7080 modem(m, 1, HIGH);
+    CHECK(modem.connect(APN, HOST, 5683));
+    m.injectUrc(urc);
+    CHECK(!modem.coapPost(1, "wind", 50, PAYLOAD, false));
+    CHECK(!modem.connected());
+    CHECK(m.count("AT+CCOAPPARA") == 0);
+  }
 }
 
 static void testCheckLink() {
@@ -260,25 +295,98 @@ static void testCheckLink() {
   CHECK(m.count("AT+CNACT=0,1") == 2);
 }
 
-int main(int argc, char** argv) {
-  if (argc > 1 && strcmp(argv[1], "--dump") == 0) {
-    for (uint8_t b : encodeSample(0x4242)) printf("%02x", b);
-    printf("\n");
-    return 0;
-  }
-  testCoapBytes();
-  testCoapLongSegment();
-  testCoapRejects();
-  testColdBootConnectAndSend();
+static void testPowerOffThenOnAgain() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  modem.powerOff();
+  CHECK(!m.powered);
+  CHECK(!modem.connected());
+  CHECK(pwrkeyPulses == 0);  // spento con AT+CPOWD, senza impulso
+
+  CHECK(!modem.coapPost(1, "wind", 50, PAYLOAD, false));
+
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.powered);
+  CHECK(pwrkeyPulses == 1);
+  CHECK(m.count("AT+CFUN") == 2);  // CFUN=0 e CFUN=1 solo alla prima accensione
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+}
+
+static void testPowerOffFallsBackToPwrkey() {
+  FakeModem m; reset(m);
+  m.answersPowerOff = false;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  modem.powerOff();
+  CHECK(pwrkeyPulses == 1);
+  CHECK(!m.powered);
+}
+
+// Se e' gia' spento un impulso lo accenderebbe
+static void testPowerOffWhenAlreadyOffNotPulsed() {
+  FakeModem m; reset(m);
+  m.powered = false;
+  Sim7080 modem(m, 1, HIGH);
+  modem.powerOff();
+  CHECK(pwrkeyPulses == 0);
+  CHECK(!m.powered);
+}
+
+static void testPolicy() {
+  const uint32_t MIN = 60000;
+  ModemPowerPolicy p(3.0f, 10 * MIN, 30 * MIN);
+  uint32_t t = 1000;
+  p.begin(t);
+  CHECK(p.modemNeeded(t));
+
+  // Vento: resta acceso. Calma: si spegne dopo 10 minuti esatti
+  p.onReport(8.0f, t);
+  p.onReport(2.9f, t + 5 * MIN);
+  CHECK(p.modemNeeded(t + 10 * MIN - 1));
+  p.onHeartbeatDone(t + 9 * MIN);
+  CHECK(!p.modemNeeded(t + 10 * MIN));
+
+  // Il messaggio di presenza arriva 30 minuti dopo l'ultimo invio
+  CHECK(!p.modemNeeded(t + 39 * MIN - 1));
+  CHECK(p.modemNeeded(t + 39 * MIN));
+  p.onHeartbeatDone(t + 39 * MIN);
+  CHECK(!p.modemNeeded(t + 39 * MIN));
+
+  // Una raffica riaccende subito, con soglia inclusa
+  p.onReport(3.0f, t + 40 * MIN);
+  CHECK(p.modemNeeded(t + 40 * MIN));
+}
+
+static void testPolicyMillisWrap() {
+  ModemPowerPolicy p(3.0f, 1000, 5000);
+  uint32_t t = 0xFFFFFF00;
+  p.begin(t);
+  CHECK(p.modemNeeded(t + 500));
+  CHECK(!p.modemNeeded(t + 1500));  // t + 1500 ha gia' superato lo zero
+  CHECK(p.modemNeeded(t + 5000));
+}
+
+int main() {
+  testColdBootConnectAndPost();
   testRunningModemNotPulsed();
-  testApnConfiguredOncePerBoot();
+  testStoredApnSkipsCfun();
   testModemDead();
   testSimNotReady();
   testNoNetworkTimesOut();
-  testOpenFails();
-  testSendErrorMarksDisconnected();
+  testPostParaErrorMarksDisconnected();
+  testActionErrorMarksDisconnected();
+  testOversizedPayloadRejected();
+  testConfirmableAcknowledged();
+  testConfirmableServerSilent();
   testUrcsAreIgnored();
+  testUrcBetweenPostsDetected();
   testCheckLink();
+  testPowerOffThenOnAgain();
+  testPowerOffFallsBackToPwrkey();
+  testPowerOffWhenAlreadyOffNotPulsed();
+  testPolicy();
+  testPolicyMillisWrap();
   printf(failures ? "%d test falliti\n" : "tutti i test superati\n", failures);
   return failures ? 1 : 0;
 }

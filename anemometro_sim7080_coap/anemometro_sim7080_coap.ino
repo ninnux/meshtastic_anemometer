@@ -10,7 +10,7 @@
 #include <InternalFileSystem.h>
 #include <bluefruit.h>
 #include <math.h>
-#include "coap.h"
+#include "modem_power.h"
 #include "sim7080.h"
 
 // ── Pin ──────────────────────────────────────────────────────
@@ -20,7 +20,7 @@
 
 // ── Modem (Serial1: RX=D7, TX=D6) ────────────────────────────
 #define MODEM_BAUD_RATE     115200
-#define MODEM_PWRKEY_PIN    1     // -1 se la scheda accende il modem da sola
+#define MODEM_PWRKEY_PIN    1
 #define MODEM_PWRKEY_ACTIVE HIGH  // HIGH con transistor sulla scheda, LOW se diretto
 #define MODEM_APN           "internet"
 
@@ -28,13 +28,22 @@
 #define COAP_SERVER_IP   "192.0.2.1"  // IPv4 del server con collector_coap.py
 #define COAP_SERVER_PORT 5683
 #define NODE_NAME        "first_anemometer"
-#define COAP_PATH        "wind/" NODE_NAME
+#define COAP_PATH        "wind"
+#define COAP_CONFIRMABLE false  // true: rileva anche un server spento, con piu' traffico
+#define COAP_CONTENT_FORMAT_JSON 50
 
 // ── Gestione connessione ─────────────────────────────────────
 #define LINK_CHECK_EVERY       6       // report tra due controlli della PDP (1 min)
 #define CONNECT_RETRY_MS       30000UL
-#define CONNECT_FAILS_TO_RESET 3
+#define CONNECT_FAILS_TO_RESET 3       // tentativi falliti prima di spegnere il modem
 #define MODEM_OFF_WAIT_MS      5000UL
+
+// ── Risparmio energetico ─────────────────────────────────────
+// Accendere e registrare il modem richiede piu' dei 10 s tra due invii:
+// si spegne solo nei periodi di calma, non tra un messaggio e l'altro.
+#define WIND_ACTIVE_KN     3.0f              // sotto questa raffica c'e' calma
+#define CALM_OFF_MS        (10UL * 60000UL)  // calma prima di spegnere il modem
+#define HEARTBEAT_MS       (30UL * 60000UL)  // messaggio di presenza durante la calma
 
 // ── BLE ──────────────────────────────────────────────────────
 BLEService        windService("A0010000-0001-0001-0001-000000000001");
@@ -81,6 +90,8 @@ SemaphoreHandle_t sampleSemaphore;
 QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vince l'ultimo
 
 Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
+ModemPowerPolicy modemPower(WIND_ACTIVE_KN, CALM_OFF_MS, HEARTBEAT_MS);
+bool modemSerialOn = false;
 
 // ── Prototipi ────────────────────────────────────────────────
 void isr_timer_cb(TimerHandle_t xTimerID);
@@ -89,7 +100,9 @@ void getWindDirection();
 int  meanWindDirection();
 void queueReport();
 void modemLoop();
-void sendReport(const WindReport& report);
+bool sendReport(const WindReport& report);
+bool connectModem();
+void modemPowerOff();
 void setupBLE();
 void updateBLE();
 void startAdvertising();
@@ -106,8 +119,8 @@ void setup() {
   uint32_t t = millis();
   while (!Serial && (millis() - t) < 3000);
 
-  Serial1.begin(MODEM_BAUD_RATE);
   modem.begin();
+  modemPower.begin(millis());
 
   pinMode(WindSensorPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(WindSensorPin), isr_rotation, FALLING);
@@ -216,30 +229,41 @@ int meanWindDirection() {
 // Task modem – Connessione e invio
 // ============================================================
 void modemLoop() {
-  static uint8_t connectFails = 0;
-  static uint8_t reportCount  = 0;
-
-  if (!modem.connected()) {
-    if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT)) {
-      connectFails = 0;
-      xQueueReset(reportQueue);  // scarta il report rimasto in attesa durante la connessione
-    } else if (++connectFails >= CONNECT_FAILS_TO_RESET) {
-      connectFails = 0;
-      modem.togglePower();  // spegne il modem: il prossimo tentativo lo riaccende
-      delay(MODEM_OFF_WAIT_MS);
-      return;
-    } else {
-      delay(CONNECT_RETRY_MS);
-      return;
-    }
-  }
+  static uint8_t failures    = 0;
+  static uint8_t reportCount = 0;
 
   WindReport report;
   if (xQueueReceive(reportQueue, &report, portMAX_DELAY) != pdTRUE) return;
 
-  sendReport(report);
+  uint32_t now = millis();
+  modemPower.onReport(report.max, now);
 
-  if (++reportCount >= LINK_CHECK_EVERY) {
+  if (!modemPower.modemNeeded(now)) {
+    if (modemSerialOn) modemPowerOff();
+    return;
+  }
+
+  // Dopo la connessione si riparte dal prossimo report: questo e' ormai vecchio
+  bool ready = modem.connected();
+  bool ok    = ready ? sendReport(report) : connectModem();
+
+  if (ok) {
+    if (ready) {
+      failures = 0;
+      modemPower.onHeartbeatDone(millis());
+    }
+  } else if (++failures >= CONNECT_FAILS_TO_RESET) {
+    failures = 0;
+    modemPower.onHeartbeatDone(millis());  // senza rete, riprova al prossimo turno
+    modemPowerOff();
+    delay(MODEM_OFF_WAIT_MS);
+    return;
+  } else {
+    delay(CONNECT_RETRY_MS);
+    return;
+  }
+
+  if (ready && ++reportCount >= LINK_CHECK_EVERY) {
     reportCount = 0;
     if (modem.connected() && !modem.checkLink()) {
       Serial.println("SIM7080: rete persa");
@@ -247,28 +271,35 @@ void modemLoop() {
   }
 }
 
-void sendReport(const WindReport& report) {
-  // Parte da un valore variabile: dopo un riavvio il server non deve
-  // scambiare i nuovi messaggi per duplicati di quelli precedenti.
+bool connectModem() {
+  if (!modemSerialOn) {
+    Serial1.begin(MODEM_BAUD_RATE);
+    modemSerialOn = true;
+  }
+  return modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT);
+}
+
+void modemPowerOff() {
+  modem.powerOff();
+  Serial1.end();  // la UART attiva impedisce alla CPU il sonno piu' profondo
+  modemSerialOn = false;
+}
+
+bool sendReport(const WindReport& report) {
+  // Il modem riparte ogni volta da capo: un contatore qui evita che il server
+  // scambi i messaggi dopo una riaccensione per duplicati di quelli precedenti.
   static uint16_t messageId = (uint16_t)millis();
 
-  char payload[48];
-  int payloadLen = snprintf(payload, sizeof(payload),
-                            "{\"mean\":%.1f,\"max\":%.1f,\"dir\":%d}",
-                            report.mean, report.max, report.dir);
+  char payload[80];
+  snprintf(payload, sizeof(payload),
+           "{\"id\":\"%s\",\"mean\":%.1f,\"max\":%.1f,\"dir\":%d}",
+           NODE_NAME, report.mean, report.max, report.dir);
 
-  uint8_t packet[96];
-  size_t packetLen = coapBuildNonPost(packet, sizeof(packet), messageId++,
-                                      COAP_PATH, COAP_CONTENT_FORMAT_JSON,
-                                      payload, payloadLen);
-  if (packetLen == 0) {
-    Serial.println("CoAP: pacchetto troppo grande");
-    return;
-  }
-
-  bool sent = modem.send(packet, packetLen);
+  bool sent = modem.coapPost(messageId++, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
+                             payload, COAP_CONFIRMABLE);
   Serial.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
   Serial.println(payload);
+  return sent;
 }
 
 // ============================================================

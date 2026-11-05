@@ -1,6 +1,6 @@
 """
-Ricevitore CoAP per anemometro_sim7080_coap: POST su /wind/<nome_stazione>
-con payload JSON {"mean": kn, "max": kn, "dir": gradi}.
+Ricevitore CoAP per anemometro_sim7080_coap: POST su /wind con payload JSON
+{"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi}.
 
 Senza INFLUX_URL nell'ambiente stampa soltanto i dati ricevuti.
 """
@@ -25,32 +25,34 @@ COAP_PORT = int(os.environ.get("COAP_PORT", "5683"))
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
-def parse_report(path, payload):
+def parse_report(payload):
     """Ritorna il report validato, oppure None se il messaggio non è valido."""
-    if len(path) != 1 or not NAME_PATTERN.match(path[0]):
-        return None
     try:
         data = json.loads(payload)
+        name = data["id"]
         mean, max_, direction = float(data["mean"]), float(data["max"]), int(data["dir"])
     except (ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(name, str) or not NAME_PATTERN.match(name):
         return None
     if not (math.isfinite(mean) and math.isfinite(max_)) or mean < 0 or max_ < 0:
         return None
     if not 0 <= direction <= 360:
         return None
-    return {"name": path[0], "mean": mean, "max": max_, "dir_deg": direction}
+    return {"name": name, "mean": mean, "max": max_, "dir_deg": direction}
 
 
-class WindResource(resource.Resource, resource.PathCapable):
+class WindResource(resource.Resource):
     def __init__(self, write_api):
         super().__init__()
         self.write_api = write_api
 
     async def render_post(self, request):
-        report = parse_report(request.opt.uri_path, request.payload)
+        confirmable = request.mtype == aiocoap.CON
+        report = parse_report(request.payload)
         if report is None:
-            print(f"Messaggio non valido da {request.remote.hostinfo}: {request.opt.uri_path} {request.payload!r}", flush=True)
-            return aiocoap.message.NoResponse
+            print(f"Messaggio non valido da {request.remote.hostinfo}: {request.payload!r}", flush=True)
+            return aiocoap.Message(code=aiocoap.BAD_REQUEST) if confirmable else aiocoap.message.NoResponse
 
         if self.write_api:
             point = Point("meteo") \
@@ -61,8 +63,8 @@ class WindResource(resource.Resource, resource.PathCapable):
             self.write_api.write(bucket=INFLUX_BUCKET, record=point)
         print(f"Ricevuto {report['name']}: media {report['mean']}kn max {report['max']}kn dir {report['dir_deg']}", flush=True)
 
-        # Il modem non legge risposte: inviarle consumerebbe solo traffico dati
-        return aiocoap.message.NoResponse
+        # Ai messaggi NON non si risponde: consumerebbe solo traffico dati
+        return aiocoap.Message(code=aiocoap.CHANGED) if confirmable else aiocoap.message.NoResponse
 
 
 async def main():

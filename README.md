@@ -26,7 +26,7 @@ Lato server, uno script Python riceve i messaggi Meshtastic e li salva su **Infl
 |---|---|
 | `anemometro_bluetooth_stringaunica/` | Firmware base: velocità + direzione dalla banderuola, invio Meshtastic + BLE. |
 | `meshtastic_davis_anemometer_compensated/` | Firmware per XIAO nRF52840 **Sense**: aggiunge bussola QMC5883L + IMU LSM6DS3 per compensare la direzione con l'orientamento del dispositivo (tilt-compensated heading). Sperimentale. |
-| `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP su rete cellulare ogni 10 s, BLE invariato. |
+| `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP ogni 10 s su rete cellulare, modem spento durante la calma, BLE invariato. |
 | `collector_coap.py` | Ricevitore CoAP del firmware SIM7080: scrive su InfluxDB. |
 | `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, massima e direzione. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
@@ -86,27 +86,31 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 ### Versione SIM7080 + CoAP
 
-`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Ogni 10 s invia media e massima del periodo (nodi) e la direzione (media vettoriale dei campioni, in gradi).
+`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Ogni 10 s invia media e massima del periodo (nodi) e la direzione (media vettoriale dei campioni, in gradi), usando il client CoAP del modem (`AT+CCOAP*`).
 
-**Collegamenti:** `D6` (TX) → RX modem, `D7` (RX) ← TX modem, `D1` → PWRKEY, GND in comune, a 115200 baud. Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche lavorano a 1,8 V: se il modulo non ha un traslatore di livello, serve aggiungerlo.
+**Collegamenti:** `D6` (TX) → RX modem, `D7` (RX) ← TX modem, `D1` → PWRKEY (obbligatorio, serve a riaccendere il modem), GND in comune, a 115200 baud. Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche lavorano a 1,8 V: se il modulo non ha un traslatore di livello, serve aggiungerlo.
 
-**Da configurare in testa allo sketch:** `MODEM_APN`, `COAP_SERVER_IP` (solo IPv4 numerico), `NODE_NAME`, `MODEM_PWRKEY_PIN`, `MODEM_PWRKEY_ACTIVE` (dipende dalla scheda del modem).
+**Da configurare in testa allo sketch:** `MODEM_APN`, `COAP_SERVER_IP` (IP o hostname), `NODE_NAME`, `MODEM_PWRKEY_PIN`, `MODEM_PWRKEY_ACTIVE` (dipende dalla scheda del modem), `COAP_CONFIRMABLE`, `WIND_ACTIVE_KN`, `CALM_OFF_MS`, `HEARTBEAT_MS`.
 
-**Messaggio:** CoAP POST non confermabile (NON) su `coap://<server>:5683/wind/<NODE_NAME>`, Content-Format `application/json`:
+**Messaggio:** CoAP POST su `coap://<server>:5683/wind`, Content-Format `application/json`, non confermabile (NON) salvo `COAP_CONFIRMABLE`:
 
 ```json
-{"mean":10.8,"max":15.1,"dir":225}
+{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225}
 ```
 
-Il datagramma è di 64 byte, 92 con le intestazioni IP/UDP, quindi circa 24 MB al mese escluso l'eventuale overhead dell'operatore.
+**Accensione del modem:** accendere il modem e registrarlo in rete richiede più dei 10 s tra due invii, quindi il modem non si spegne tra un messaggio e l'altro ma solo durante la calma.
+
+- Resta acceso finché c'è vento: raffica del periodo ≥ `WIND_ACTIVE_KN` (3 kn) negli ultimi `CALM_OFF_MS` (10 min), e invia ogni 10 s.
+- Dopo quel tempo di calma si spegne con `AT+CPOWD=1`, se non risponde con PWRKEY. Anche la UART viene disattivata.
+- Si riaccende al primo report sopra soglia. La stazione continua a misurare da spenta, ma i report durante la riaccensione vanno persi.
+- Durante la calma si riaccende ogni `HEARTBEAT_MS` (30 min) per un messaggio di presenza, poi si rispegne. Senza rete riprova al turno successivo.
+- Dopo 3 errori consecutivi di connessione o invio il modem viene spento e riacceso.
 
 **Funzionamento:**
 
-- I pacchetti CoAP sono codificati in `coap.h` e spediti come UDP con `AT+CAOPEN` / `AT+CASEND`, senza usare i comandi CoAP del modem.
 - Il modem gira in un task FreeRTOS separato, quindi i comandi AT non interrompono il campionamento.
 - Se il modem è occupato o la rete manca, i report vengono scartati: resta solo l'ultimo in coda e non c'è buffer per i periodi senza rete.
-- I messaggi NON non hanno conferma. La perdita della rete viene rilevata da un errore di `AT+CASEND` o dal controllo della PDP con `AT+CNACT?` ogni minuto; un server spento non viene rilevato.
-- Dopo 3 tentativi di connessione falliti il modem viene spento e riacceso con PWRKEY.
+- La perdita della rete viene rilevata dagli errori dei comandi CoAP, dagli URC del modem e dal controllo della PDP con `AT+CNACT?` ogni minuto. Con NON un server spento non viene rilevato; con `COAP_CONFIRMABLE` sì, al costo di una conferma per ogni messaggio.
 
 **Ricevitore:**
 
@@ -117,7 +121,7 @@ INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 
 Scrive nella measurement `meteo` i campi `wind_mean`, `wind_max`, `direction_deg` con tag `sensor_name`; senza `INFLUX_URL` stampa soltanto i dati. Serve la porta UDP 5683 raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque conosca l'indirizzo può inviare dati.
 
-**Test sul computer** (codifica CoAP e driver con modem simulato): vedi il comando in testa a `anemometro_sim7080_coap/test/test_sim7080.cpp`.
+**Test sul computer** (driver con modem simulato e gestione dell'accensione): vedi il comando in testa a `anemometro_sim7080_coap/test/test_sim7080.cpp`.
 
 ## Web app BLE
 
