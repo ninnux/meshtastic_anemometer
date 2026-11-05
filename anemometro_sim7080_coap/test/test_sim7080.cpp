@@ -8,6 +8,7 @@
 #include "Arduino.h"
 #include "sim7080.h"
 #include "hmac_sha256.h"
+#include "wind_clock.h"
 #include "wind_report.h"
 
 uint32_t fakeMillis = 0;
@@ -32,6 +33,8 @@ public:
   bool keepsContextInPsm = true;
   bool answersPowerOff = true;
   bool coapOk = true;
+  std::string ntpResult = "+CNTP: 1";
+  std::string clock = "\"26/11/05,11:53:02+00\"";
   bool raiSupported = true;
   int ignoreCommands = 0;
   int actionError = 0;
@@ -129,6 +132,10 @@ private:
       rx += "\r\nNORMAL POWER DOWN\r\n";
     } else if (c.rfind("AT+CCOAPPARA=", 0) == 0) {
       rx += coapOk ? "\r\nOK\r\n" : "\r\nERROR\r\n";
+    } else if (c == "AT+CNTP") {
+      rx += "\r\nOK\r\n\r\n" + ntpResult + "\r\n";
+    } else if (c == "AT+CCLK?") {
+      rx += "\r\n+CCLK: " + clock + "\r\n\r\nOK\r\n";
     } else if (c.rfind("AT+CRAI=", 0) == 0) {
       rx += raiSupported ? "\r\nOK\r\n" : "\r\nERROR\r\n";
     } else if (c == "AT+CCOAPACTION") {
@@ -521,14 +528,14 @@ static void testHmacVectors() {
 
 // Stesso vettore dei test del server Go e calcolato con hmac di Python
 static const char* TEST_KEY = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-static const char* SIGNED_PAYLOAD = "{\"id\":\"first_anemometer\",\"mean\":10.8,\"max\":15.1,\"dir\":225,\"n\":65537,"
-                                    "\"sig\":\"3a482c440614dcc4d24ea0c6a99eed20\"}";
+static const char* SIGNED_PAYLOAD = "{\"id\":\"first_anemometer\",\"mean\":10.8,\"max\":15.1,\"dir\":225,\"n\":1793865182,"
+                                    "\"sig\":\"684020558e98f5a3ce8e48347f52966a\"}";
 
-static const WindReport SAMPLE_REPORT = {10.8f, 15.1f, 225};
+static const WindReport SAMPLE_REPORT = {10.8f, 15.1f, 225, 0};
 
 static void testSignedPayloadMatchesVector() {
   char buf[128];
-  CHECK(formatSignedWindPayload(buf, sizeof(buf), "first_anemometer", SAMPLE_REPORT, 65537, TEST_KEY));
+  CHECK(formatSignedWindPayload(buf, sizeof(buf), "first_anemometer", SAMPLE_REPORT, 1793865182, TEST_KEY));
   CHECK(strcmp(buf, SIGNED_PAYLOAD) == 0);
 }
 
@@ -539,13 +546,13 @@ static void testSignatureChangesWithEveryField() {
   CHECK(strcmp(strstr(base, "sig"), strstr(other, "sig")) != 0);
   CHECK(formatSignedWindPayload(other, sizeof(other), "a", SAMPLE_REPORT, 1, "altra-chiave"));
   CHECK(strcmp(strstr(base, "sig"), strstr(other, "sig")) != 0);
-  const WindReport changed = {10.9f, 15.1f, 225};
+  const WindReport changed = {10.9f, 15.1f, 225, 0};
   CHECK(formatSignedWindPayload(other, sizeof(other), "a", changed, 1, TEST_KEY));
   CHECK(strcmp(strstr(base, "sig"), strstr(other, "sig")) != 0);
 }
 
 static void testPayloadWorstCaseFitsSketchBuffer() {
-  const WindReport worst = {999.9f, 999.9f, 359};
+  const WindReport worst = {999.9f, 999.9f, 359, 0};
   char buf[128];
   CHECK(formatSignedWindPayload(buf, sizeof(buf), "first_anemometer", worst, 0xFFFFFFFF, TEST_KEY));
 }
@@ -560,71 +567,119 @@ static void testPayloadTooLong() {
   CHECK(strlen(buf) == full);
 }
 
-static void testMessageCounterGrows() {
-  MessageCounter c;
-  c.restore(0);
-  CHECK(!c.ready());
-  CHECK(!c.exhausted());
-  CHECK(c.nextEpoch() == 1);
-  c.epochSaved();
-  CHECK(c.ready());
-  CHECK(c.next() == 65536);
-  CHECK(c.next() == 65537);
-
-  // Riavvio: il valore supera sempre quelli dell'epoca precedente
-  MessageCounter rebooted;
-  rebooted.restore(1);
-  CHECK(rebooted.nextEpoch() == 2);
-  rebooted.epochSaved();
-  CHECK(rebooted.next() == 131072);
+// Riferimenti calcolati con il modulo calendar di Python
+static void testParseModemClock() {
+  uint32_t t = 0;
+  CHECK(parseModemClock("\"26/11/05,11:53:02+00\"", t));
+  CHECK(t == 1793879582UL);
+  CHECK(parseModemClock("\"26/11/05,12:53:02+04\"", t));  // un'ora avanti, stesso istante
+  CHECK(t == 1793879582UL);
+  CHECK(parseModemClock("\"26/11/05,10:53:02-04\"", t));
+  CHECK(t == 1793879582UL);
+  CHECK(parseModemClock("\"24/01/01,00:00:00+00\"", t));
+  CHECK(t == 1704067200UL);
+  CHECK(parseModemClock("\"24/02/29,23:59:59+00\"", t));  // anno bisestile
+  CHECK(t == 1709251199UL);
+  CHECK(parseModemClock("\"25/03/01,00:00:00+00\"", t));
+  CHECK(t == 1740787200UL);
+  CHECK(parseModemClock("\"28/12/31,23:59:59+00\"", t));
+  CHECK(t == 1861919999UL);
+  CHECK(parseModemClock("\"99/12/31,23:59:59+00\"", t));
+  CHECK(t == 4102444799UL);
 }
 
-// Senza un invio l'epoca non avanza: un ciclo di riavvii non consuma nulla
-static void testRestoreDoesNotConsumeEpoch() {
-  MessageCounter c;
-  c.restore(1);
-  c.epochSaved();
-  for (int boot = 0; boot < 3; boot++) {
-    c.restore(7);
-    CHECK(!c.ready());
-    CHECK(c.nextEpoch() == 8);
+static void testParseModemClockRejects() {
+  uint32_t t = 0;
+  const char* invalid[] = {
+    "", "\"", "garbage",
+    "\"26/11/05,11:53:02\"",      // senza fuso
+    "26/11/05,11:53:02+00",        // senza virgolette
+    "\"26/11/05,11:53:02+00",      // senza chiusura
+    "\"23/12/31,23:59:59+00\"",   // prima del 2024
+    "\"26/13/01,00:00:00+00\"", "\"26/00/01,00:00:00+00\"", "\"26/01/00,00:00:00+00\"",
+    "\"26/04/31,00:00:00+00\"", "\"25/02/29,00:00:00+00\"",
+    "\"26/01/01,24:00:00+00\"", "\"26/01/01,00:60:00+00\"", "\"26/01/01,00:00:60+00\"",
+    "\"26/01/01,00:00:00+97\"", "\"26/01/01,00:00:00*00\"",
+  };
+  for (const char* text : invalid) {
+    bool parsed = parseModemClock(text, t);
+    if (parsed) printf("accettato: %s\n", text);
+    CHECK(!parsed && text);
   }
 }
 
-static void testMessageCounterNeedsNewEpochWhenExhausted() {
-  MessageCounter c;
-  c.restore(0);
-  c.epochSaved();
-  uint32_t last = 0;
-  for (uint32_t i = 0; i < 65536; i++) {
-    CHECK(c.ready());
-    uint32_t value = c.next();
-    if (i > 0) CHECK(value > last);
-    last = value;
-  }
-  CHECK(!c.ready());
-  CHECK(!c.exhausted());  // basta un'epoca nuova
-  CHECK(last == 0x1FFFF);
-  CHECK(c.nextEpoch() == 2);
-  c.epochSaved();
-  CHECK(c.next() > last);
+static void testClockTimestamps() {
+  WindClock c;
+  CHECK(c.needsSync(0));
+  CHECK(!c.usable(0));
+  c.sync(1000000, 50000);
+  CHECK(!c.needsSync(50000));
+  CHECK(c.usable(50000));
+  CHECK(c.timestamp(50000) == 1000000);
+  CHECK(c.timestamp(350000) == 1000300);       // 5 minuti dopo
 }
 
-// All'ultima epoca si invia fino alla fine, poi ci si ferma senza ripartire da zero
-static void testLastEpochStopsWithoutWrapping() {
-  MessageCounter c;
-  c.restore(0xFFFE);
-  CHECK(!c.exhausted());
-  c.epochSaved();
-  CHECK(!c.exhausted());  // l'ultima epoca e' ancora utilizzabile
-  CHECK(c.next() == 0xFFFF0000);
-  for (uint32_t i = 1; i < 65536; i++) c.next();
-  CHECK(!c.ready());
-  CHECK(c.exhausted());
+// Il report si chiude prima che il modem si connetta e sincronizzi
+static void testClockBeforeSync() {
+  WindClock c;
+  c.sync(1000000, 400000);
+  CHECK(c.timestamp(100000) == 999700);
+}
 
-  MessageCounter rebooted;
-  rebooted.restore(0xFFFF);
-  CHECK(rebooted.exhausted());
+static void testClockAlwaysGrows() {
+  WindClock c;
+  c.sync(1000000, 0);
+  CHECK(c.timestamp(10000) == 1000010);
+  c.sync(1000000, 10000);                       // l'ora arretra di 10 s
+  CHECK(c.timestamp(10000) == 1000011);
+  CHECK(c.timestamp(10000) == 1000012);
+  CHECK(c.timestamp(5000000) == 1004990);
+}
+
+static void testClockResyncAndExpiry() {
+  const uint32_t HOUR = 3600UL * 1000UL;
+  WindClock c;
+  c.sync(1000000, 1000);
+  CHECK(!c.needsSync(1000 + 24 * HOUR - 1));
+  CHECK(c.needsSync(1000 + 24 * HOUR));
+  CHECK(c.usable(1000 + 7 * 24 * HOUR - 1));
+  CHECK(!c.usable(1000 + 7 * 24 * HOUR));
+}
+
+// millis() riparte da zero dopo circa 49 giorni
+static void testClockMillisWrap() {
+  WindClock c;
+  uint32_t syncMs = 0xFFFFF000;
+  c.sync(1000000, syncMs);
+  CHECK(!c.needsSync(syncMs + 10000));
+  CHECK(c.timestamp(syncMs + 10000) == 1000010);
+}
+
+static void testSyncTime() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  uint32_t t = 0;
+  CHECK(modem.syncTime("pool.ntp.org", t));
+  CHECK(t == 1793879582UL);
+  CHECK(m.count("AT+CNTP=\"pool.ntp.org\",0,0,0") == 1);
+}
+
+static void testSyncTimeNtpError() {
+  FakeModem m; reset(m);
+  m.ntpResult = "+CNTP: 61";
+  Sim7080 modem(m, 1, HIGH);
+  uint32_t t = 0;
+  CHECK(!modem.syncTime("pool.ntp.org", t));
+  CHECK(m.count("AT+CCLK?") == 0);  // l'orologio non e' stato aggiornato
+  CHECK(fakeMillis < 5000);         // riconosce l'errore senza attendere il timeout
+}
+
+static void testSyncTimeBadClock() {
+  FakeModem m; reset(m);
+  m.clock = "\"20/01/06,00:00:00+00\"";  // data di default di un modem non sincronizzato
+  Sim7080 modem(m, 1, HIGH);
+  uint32_t t = 0;
+  CHECK(!modem.syncTime("pool.ntp.org", t));
 }
 
 static bool close(float a, float b) { return a > b - 0.001f && a < b + 0.001f; }
@@ -715,10 +770,16 @@ int main() {
   testSignatureChangesWithEveryField();
   testPayloadWorstCaseFitsSketchBuffer();
   testPayloadTooLong();
-  testMessageCounterGrows();
-  testRestoreDoesNotConsumeEpoch();
-  testMessageCounterNeedsNewEpochWhenExhausted();
-  testLastEpochStopsWithoutWrapping();
+  testParseModemClock();
+  testParseModemClockRejects();
+  testClockTimestamps();
+  testClockBeforeSync();
+  testClockAlwaysGrows();
+  testClockResyncAndExpiry();
+  testClockMillisWrap();
+  testSyncTime();
+  testSyncTimeNtpError();
+  testSyncTimeBadClock();
   testGustNeedsFullWindow();
   testGustSlides();
   testGustNotSplitAcrossBlocks();

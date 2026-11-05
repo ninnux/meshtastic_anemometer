@@ -13,7 +13,7 @@ func TestParseReportValid(t *testing.T) {
 	if n != 7 {
 		t.Fatalf("contatore errato: %d", n)
 	}
-	if r != (Report{Name: "first_anemometer", Mean: 10.8, Max: 15.1, Direction: 225}) {
+	if r != (Report{Name: "first_anemometer", Mean: 10.8, Max: 15.1, Direction: 225, MeasuredAt: time.Unix(7, 0)}) {
 		t.Fatalf("report errato: %+v", r)
 	}
 }
@@ -60,8 +60,8 @@ func TestParseReportLimits(t *testing.T) {
 }
 
 func TestLineProtocol(t *testing.T) {
-	r := Report{Name: "s1", Mean: 10.8, Max: 15, Direction: 225}
-	got := r.LineProtocol(time.Unix(1700000000, 0))
+	r := Report{Name: "s1", Mean: 10.8, Max: 15, Direction: 225, MeasuredAt: time.Unix(1700000000, 0)}
+	got := r.LineProtocol()
 	want := "meteo,sensor_name=s1 wind_mean=10.8,wind_max=15,direction_deg=225i 1700000000"
 	if got != want {
 		t.Fatalf("\n got %s\nwant %s", got, want)

@@ -17,10 +17,12 @@ type Report struct {
 	Mean      float64
 	Max       float64
 	Direction int
+	// MeasuredAt è la fine del periodo di misura, secondo l'orologio della stazione.
+	MeasuredAt time.Time
 }
 
-// ParseReport valida il payload JSON {"id":..., "mean":..., "max":..., "dir":..., "n":...}
-// e ritorna anche il contatore. La firma viene controllata da Auth.
+// ParseReport valida il payload JSON {"id":..., "mean":..., "max":..., "dir":..., "n":...},
+// dove n è l'ora Unix di misura. Firma e ora vengono controllate da Auth.
 func ParseReport(payload []byte) (Report, uint32, error) {
 	var raw struct {
 		ID   *string  `json:"id"`
@@ -44,16 +46,22 @@ func ParseReport(payload []byte) (Report, uint32, error) {
 	if *raw.Dir < 0 || *raw.Dir > 360 {
 		return Report{}, 0, errors.New("direzione fuori intervallo")
 	}
-	return Report{Name: *raw.ID, Mean: *raw.Mean, Max: *raw.Max, Direction: *raw.Dir}, *raw.N, nil
+	return Report{
+		Name:       *raw.ID,
+		Mean:       *raw.Mean,
+		Max:        *raw.Max,
+		Direction:  *raw.Dir,
+		MeasuredAt: time.Unix(int64(*raw.N), 0),
+	}, *raw.N, nil
 }
 
 // LineProtocol scrive lo stesso formato di collector_coap.py, con l'orario in secondi.
 // Il nome non richiede escape: namePattern ammette solo caratteri sicuri.
-func (r Report) LineProtocol(at time.Time) string {
+func (r Report) LineProtocol() string {
 	return fmt.Sprintf("meteo,sensor_name=%s wind_mean=%s,wind_max=%s,direction_deg=%di %d",
 		r.Name,
 		strconv.FormatFloat(r.Mean, 'f', -1, 64),
 		strconv.FormatFloat(r.Max, 'f', -1, 64),
 		r.Direction,
-		at.Unix())
+		r.MeasuredAt.Unix())
 }

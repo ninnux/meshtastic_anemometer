@@ -14,12 +14,18 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
 	signatureBytes = 16 // HMAC-SHA256 troncato a 128 bit
 	minKeyLength   = 32
 	signatureField = `,"sig":"`
+
+	// Il messaggio parte dopo che il modem si è svegliato e registrato in rete
+	maxMessageAge = 15 * time.Minute
+	// Tollera la differenza tra l'orologio della stazione e quello del server
+	maxMessageAhead = 2 * time.Minute
 )
 
 var (
@@ -28,12 +34,14 @@ var (
 	signaturePattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
 
-// Auth verifica la firma HMAC e impedisce di riusare un messaggio già visto: ogni
-// stazione ha la sua chiave e un contatore che deve sempre crescere. I contatori sono
-// salvati su file, altrimenti dopo un riavvio del server i vecchi messaggi tornerebbero validi.
+// Auth verifica la firma HMAC e impedisce di riusare un messaggio già visto: ogni stazione
+// ha la sua chiave, e il campo n, l'ora di misura, deve essere recente e più alto dell'ultimo.
+// L'ultimo valore è salvato su file, così anche subito dopo un riavvio del server un
+// messaggio ancora recente non può essere riusato.
 type Auth struct {
 	keys      map[string][]byte
 	statePath string
+	now       func() time.Time
 
 	mu       sync.Mutex
 	counters map[string]uint32
@@ -66,7 +74,7 @@ func ParseStationKeys(spec string) (map[string][]byte, error) {
 // NewAuth carica i contatori da statePath. Un file illeggibile è un errore: partire
 // con i contatori azzerati riaprirebbe la porta ai vecchi messaggi.
 func NewAuth(keys map[string][]byte, statePath string) (*Auth, error) {
-	a := &Auth{keys: keys, statePath: statePath, counters: make(map[string]uint32)}
+	a := &Auth{keys: keys, statePath: statePath, now: time.Now, counters: make(map[string]uint32)}
 	if statePath == "" {
 		return a, nil
 	}
@@ -83,7 +91,7 @@ func NewAuth(keys map[string][]byte, statePath string) (*Auth, error) {
 	return a, nil
 }
 
-// Verify ritorna il report solo se firma e contatore sono validi, e registra il contatore.
+// Verify ritorna il report solo se firma e ora sono validi, e registra il valore di n.
 // La firma copre i byte esatti ricevuti prima del campo sig, così non dipende da come
 // il firmware formatta i numeri.
 func (a *Auth) Verify(payload []byte) (Report, error) {
@@ -114,10 +122,16 @@ func (a *Auth) Verify(payload []byte) (Report, error) {
 		return Report{}, fmt.Errorf("%w: firma errata per %q", errUnauthorized, report.Name)
 	}
 
+	// Dopo la firma, e prima di aggiornare l'ultimo valore: un messaggio con un'ora futura
+	// non deve poter bloccare la stazione per sempre.
+	if age := a.now().Sub(report.MeasuredAt); age > maxMessageAge || age < -maxMessageAhead {
+		return Report{}, fmt.Errorf("%w: ora di %q fuori finestra, differenza %s: controlla gli orologi", errUnauthorized, report.Name, age.Round(time.Second))
+	}
+
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if last := a.counters[report.Name]; counter <= last {
-		return Report{}, fmt.Errorf("%w: contatore %d già visto per %q (ultimo %d)", errUnauthorized, counter, report.Name, last)
+		return Report{}, fmt.Errorf("%w: valore n %d già visto per %q (ultimo %d)", errUnauthorized, counter, report.Name, last)
 	}
 	a.counters[report.Name] = counter
 	if err := a.save(); err != nil {

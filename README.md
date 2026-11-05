@@ -39,7 +39,7 @@ Questa guida installa il firmware SIM7080 e il ricevitore in Go su un server Dev
 **Cosa serve:**
 
 - sul computer: [PlatformIO](https://platformio.org/) (oppure l'Arduino IDE), Go 1.22 o più recente, `openssl` e un client SSH;
-- sul server: Devuan con accesso SSH come root o con `sudo`, un'istanza InfluxDB v2 con il suo token e la porta UDP 5683 raggiungibile da Internet;
+- sul server: Devuan con accesso SSH come root o con `sudo`, l'orologio sincronizzato (ad esempio con il pacchetto `ntp`), un'istanza InfluxDB v2 con il suo token e la porta UDP 5683 raggiungibile da Internet;
 - per la stazione: XIAO nRF52840, modem SIM7080G con SIM Cat-M o NB-IoT, anemometro Davis.
 
 ### 1. Scarica il codice
@@ -129,15 +129,17 @@ sudo tail -f /var/log/anemometer-collector/collector.log          # sul server
 | server | `ricevuto first_anemometer: media ...` | messaggio accettato e passato a InfluxDB |
 | server | `firma errata` | la chiave è diversa tra stazione e server |
 | server | `stazione "..." sconosciuta` | il nome non è in `STATION_KEYS`, o è diverso da `NODE_NAME` |
-| server | `contatore ... già visto` | il contatore è ripartito: vedi [Autenticazione](#autenticazione) |
+| server | `ora ... fuori finestra` | l'orologio del server o della stazione è sbagliato |
+| server | `valore n ... già visto` | messaggio ripetuto, o orologio della stazione tornato indietro: si risolve da solo quando l'ora supera l'ultimo valore |
+| stazione | `Sincronizzazione NTP fallita` | il modem non ottiene l'ora: controlla che NTP passi dall'APN |
 
 Se sul server non compare nulla, controlla prima `COAP_SERVER_IP` e il firewall.
 
 ### Più stazioni e gestione delle chiavi
 
-Ogni stazione ha nome, chiave e contatore propri. Il server sceglie la chiave in base al campo `id` del messaggio. Se una stazione viene compromessa, le altre restano protette: la sua chiave non permette di scrivere a nome di un'altra.
+Ogni stazione ha nome, chiave e ultimo valore `n` propri. Il server sceglie la chiave in base al campo `id` del messaggio. Se una stazione viene compromessa, le altre restano protette: la sua chiave non permette di scrivere a nome di un'altra.
 
-Non usare la stessa chiave o lo stesso nome su due stazioni. Con la stessa chiave ne basterebbe una compromessa per falsificarle tutte. Con lo stesso nome condividerebbero il contatore, e i messaggi di una verrebbero scartati come già visti.
+Non usare la stessa chiave o lo stesso nome su due stazioni. Con la stessa chiave ne basterebbe una compromessa per falsificarle tutte. Con lo stesso nome condividerebbero l'ultimo valore `n`, e i messaggi di una verrebbero scartati come già visti.
 
 Per inserire una stazione segui [Aggiungere un nuovo nodo](#aggiungere-un-nuovo-nodo).
 
@@ -147,7 +149,7 @@ Per inserire una stazione segui [Aggiungere un nuovo nodo](#aggiungere-un-nuovo-
 
 ### Aggiungere un nuovo nodo
 
-Il server è già installato, quindi non serve rifare il deploy. Le altre stazioni non vanno toccate: mantengono chiavi e contatori.
+Il server è già installato, quindi non serve rifare il deploy. Le altre stazioni non vanno toccate.
 
 **1. Scegli il nome e genera la chiave**
 
@@ -311,26 +313,27 @@ Velocità e direzione vengono lette ogni secondo. Ogni 5 minuti parte un messagg
 Il messaggio è un CoAP POST su `coap://<server>:5683/wind`, con Content-Format `application/json`, non confermabile (NON) salvo `COAP_CONFIRMABLE`:
 
 ```json
-{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":65537,"sig":"3a482c440614dcc4d24ea0c6a99eed20"}
+{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":1793865182,"sig":"684020558e98f5a3ce8e48347f52966a"}
 ```
 
-`id` è `NODE_NAME` e il ricevitore lo salva come tag `sensor_name`. `n` e `sig` servono all'autenticazione. Il messaggio è di circa 150 byte con le intestazioni IP/UDP, quindi circa 1,3 MB al mese, escluse la segnalazione di rete e l'overhead dell'operatore.
+`id` è `NODE_NAME` e il ricevitore lo salva come tag `sensor_name`. `n` è l'ora Unix di fine misura e, con `sig`, serve all'autenticazione. Il messaggio è di circa 155 byte con le intestazioni IP/UDP, quindi circa 1,3 MB al mese, escluse la segnalazione di rete e l'overhead dell'operatore.
 
 #### Autenticazione
 
-Ogni messaggio è firmato con **HMAC-SHA256**, troncato a 128 bit, e ogni stazione ha la sua chiave. Il ricevitore accetta solo messaggi con firma valida e contatore più alto dell'ultimo visto per quella stazione.
+Ogni messaggio è firmato con **HMAC-SHA256**, troncato a 128 bit, e ogni stazione ha la sua chiave. Il ricevitore accetta solo messaggi con firma valida, con `n` più alto dell'ultimo visto per quella stazione e con un'ora recente: non più vecchia di 15 minuti e non più avanti di 2 minuti rispetto all'ora del server.
 
 - **Cosa protegge:** dati falsi, messaggi alterati e messaggi vecchi reinviati.
 - **Cosa non protegge:** i dati viaggiano in chiaro, quindi sono leggibili da chi intercetta il traffico. Per cifrarli servirebbe DTLS o una VPN.
 - **La firma:** copre tutti i byte del messaggio che precedono `,"sig":"`.
-- **Il contatore:** `n` è composto da un'epoca nei 16 bit alti e da una sequenza nei 16 bit bassi. L'epoca è salvata in flash (`/message_epoch.bin`, 4 byte) solo al primo invio riuscito a connettersi dopo un avvio e ogni 65536 messaggi, circa 227 giorni. I riavvii senza invii non consumano epoche né flash.
-- **Limiti del contatore:** ci sono 65535 epoche, ma la flash dovrebbe usurarsi prima: le prove con il filesystem della scheda mostrano fino a 2,5 cancellazioni della stessa zona per salvataggio, e la flash è garantita per circa 10.000 cancellazioni, quindi conviene contare su circa 4000 salvataggi. Con un riavvio al giorno sono più di 10 anni, ma riavvii frequenti con invio li consumano prima.
-- **Contatore esaurito o illeggibile:** il firmware non riparte da zero, perché il server scarterebbe tutto. Sospende gli invii senza svegliare il modem e lo segnala sul monitor seriale con `invii sospesi`. Se invece non riesce a scrivere in flash, riprova a ogni invio e segnala `Contatore non salvato in flash`.
-- **Sul server:** l'ultimo contatore di ogni stazione è salvato in `STATE_FILE`, così i vecchi messaggi restano scartati anche dopo un riavvio. Se il file è illeggibile il ricevitore non parte.
+- **L'ora:** la stazione non salva nulla in flash. Dopo l'avvio chiede l'ora via NTP con `AT+CNTP`, la legge con `AT+CCLK?`, la mantiene con il proprio orologio e la risincronizza ogni 24 ore. Il server di default è `pool.ntp.org` (`NTP_SERVER`). Senza un'ora valida il report non parte. Se la risincronizzazione fallisce, continua a inviare per 7 giorni con l'ora che ha.
+- **Dati e riavvii:** su InfluxDB ogni punto ha l'ora di misura, non quella di ricezione. Un riavvio non richiede nessun recupero, e il campo `n` a 32 bit basta fino al 2106.
+- **Sul server:** l'ultimo `n` di ogni stazione è salvato in `STATE_FILE`, così anche subito dopo un riavvio un messaggio ancora recente non può essere riusato. Se il file è illeggibile il ricevitore non parte: cancellarlo è sicuro, a costo di accettare per 15 minuti un messaggio già visto.
+- **Orologio del server:** deve essere sincronizzato, ad esempio con un client NTP, altrimenti i messaggi validi vengono scartati.
+- **NTP non è autenticato:** chi manipola la rete può far sbagliare l'ora alla stazione e bloccarne gli invii, ma non può falsificare i dati. Il server scarta l'ora sbagliata senza aggiornare l'ultimo `n`, quindi gli invii riprendono appena l'ora torna corretta.
 
 Per generare le chiavi e aggiungere stazioni vedi [Installazione](#installazione). Senza `secrets.h` lo sketch non compila. Senza chiavi sul server ogni messaggio viene rifiutato.
 
-**Se la flash della XIAO viene cancellata o il contatore è esaurito:** il contatore riparte da capo e il server scarta tutti i messaggi come già visti, con `contatore ... già visto` nel log. Per ripartire, cancella il file del contatore dalla scheda, se serve; poi ferma il ricevitore, togli la stazione da `STATE_FILE` (oppure cancella il file, se la stazione è una sola) e riavvialo. Un normale caricamento del firmware non dovrebbe cancellare il contatore, ma va verificato sulla scheda. Chi ha accesso fisico alla stazione può leggerne la chiave: in quel caso sostituiscila.
+Chi ha accesso fisico alla stazione può leggerne la chiave: in quel caso sostituiscila.
 
 Sul BLE `M` e `X` sono la media e la raffica del periodo in corso e si azzerano a ogni invio, mentre `S` è il valore istantaneo su 1 s.
 
@@ -370,6 +373,7 @@ Anemometro su `D2` e banderuola su `A3`, come nel firmware base.
 | `MODEM_APN` | `iot.1nce.net` | APN della SIM |
 | `COAP_SERVER_IP` | `192.0.2.1` | **Segnaposto, da sostituire.** IP o hostname del server con `collector_coap.py` |
 | `COAP_SERVER_PORT` | `5683` | Porta UDP del server |
+| `NTP_SERVER` | `pool.ntp.org` | Server NTP da cui prendere l'ora |
 | `NODE_NAME` | `first_anemometer` | Nome della stazione: lettere, numeri, `_` e `-`, massimo 32 caratteri |
 | `STATION_KEY` | in `secrets.h` | Chiave della stazione, fuori dal repository |
 | `COAP_CONFIRMABLE` | `false` | `true` usa messaggi CON e rileva anche un server spento, con una conferma per ogni messaggio |
@@ -413,7 +417,7 @@ INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 | Variabile d'ambiente | Predefinito | Significato |
 |---|---|---|
 | `STATION_KEYS` | nessuno | Chiavi delle stazioni, `nome:chiave,nome:chiave`, di almeno 32 caratteri; senza, ogni messaggio viene rifiutato |
-| `STATE_FILE` | nessuno | File con i contatori; senza, dopo un riavvio i vecchi messaggi tornano validi |
+| `STATE_FILE` | nessuno | File con l'ultimo `n` di ogni stazione; senza, dopo un riavvio un messaggio ancora recente può essere riusato |
 | `INFLUX_URL` | nessuno | URL di InfluxDB; senza, stampa soltanto i dati |
 | `INFLUX_TOKEN` | nessuno | Token di InfluxDB |
 | `INFLUX_ORG` | `meteo_org` | Organizzazione |
@@ -421,7 +425,7 @@ INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 | `COAP_BIND` | `::` | Indirizzo di ascolto |
 | `COAP_PORT` | `5683` | Porta UDP di ascolto |
 
-Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario è quello di ricezione e i valori si riferiscono ai 5 minuti precedenti. I messaggi scartati vengono registrati nel log. Ai messaggi NON non risponde, per non consumare traffico; a quelli CON risponde `2.04`, `4.00` se il messaggio è malformato o `4.01` se la firma o il contatore non sono validi.
+Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario è quello di fine misura, inviato dalla stazione nel campo `n`, e i valori si riferiscono ai 5 minuti precedenti. I messaggi scartati vengono registrati nel log. Ai messaggi NON non risponde, per non consumare traffico; a quelli CON risponde `2.04`, `4.00` se il messaggio è malformato o `4.01` se la firma o l'ora non sono valide.
 
 La porta UDP deve essere raggiungibile da Internet. Il traffico non è cifrato: per nasconderlo servirebbe una VPN o un APN privato.
 
@@ -429,7 +433,7 @@ Per il server è consigliata la versione in Go, descritta in [Ricevitore in Go e
 
 #### Test sul computer
 
-Provano il driver con un modem simulato, il payload, il calcolo della raffica, la firma e il contatore. Non provano lo sketch `.ino` né l'hardware. Dalla cartella `anemometro_sim7080_coap/`:
+Provano il driver con un modem simulato, il payload, il calcolo della raffica, la firma e la gestione dell'ora. Non provano lo sketch `.ino` né l'hardware. Dalla cartella `anemometro_sim7080_coap/`:
 
 ```bash
 g++ -std=c++17 -Itest -I. test/test_sim7080.cpp sim7080.cpp -o /tmp/test_sim7080 && /tmp/test_sim7080
@@ -448,7 +452,7 @@ Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Ma
 5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare un solo impulso, anche con il debounce a 40 ms.
 6. **Taratura:** la formula vale per un vero Davis. Un confronto con un anemometro portatile è il controllo più affidabile.
 7. **Consumo:** misura la corrente del modem per vedere quanto dorme davvero.
-8. **Contatore in flash:** dopo un riavvio con invio `n` deve crescere di almeno 65536, anche dopo un caricamento del firmware. La sequenza di scrittura è stata provata sul computer con il LittleFS del BSP, simulando interruzioni di corrente, ma non con il driver della flash della scheda.
+8. **Ora di rete:** `AT+CNTP` deve riuscire sulla tua rete, e dopo la sincronizzazione `AT+CCLK?` deve riportare l'ora UTC. Il manuale non indica il formato di risposta di `AT+CNTP`, per questo il firmware legge l'ora da `AT+CCLK?`. Se NTP non passa dall'APN, serve un'altra fonte, ad esempio l'ora della rete cellulare con `AT+CLTS`.
 
 Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, ma per verificare il PSM serve un periodo più lungo.
 
@@ -458,7 +462,7 @@ Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP invi
 
 - **Binario unico:** è statico, quindi sul server non servono Python né librerie.
 - **InfluxDB fermo:** i punti restano in memoria con il loro orario e vengono riscritti quando torna raggiungibile. La coda contiene 2048 punti, circa una settimana per una stazione; a coda piena si perdono i più vecchi. Se il server viene fermato mentre InfluxDB è irraggiungibile, i punti in coda vanno persi.
-- **Autenticazione:** come la versione Python, verifica firma e contatore, con `STATION_KEYS` e `STATE_FILE`.
+- **Autenticazione:** come la versione Python, verifica firma e ora, con `STATION_KEYS` e `STATE_FILE`.
 
 Serve Go 1.22 o più recente sul computer da cui si fa il deploy. Il token non compare mai sulla riga di comando del processo.
 
@@ -480,7 +484,7 @@ Devuan usa di default sysvinit, quindi il servizio è uno script in `/etc/init.d
 | `/usr/local/bin/anemometer-collector` | Binario |
 | `/etc/init.d/anemometer-collector` | Servizio, avviato al boot |
 | `/etc/default/anemometer-collector` | Configurazione con token e chiavi, permessi `640` |
-| `/var/lib/anemometer-collector/counters.json` | Contatori dei messaggi, conservati tra un deploy e l'altro |
+| `/var/lib/anemometer-collector/counters.json` | Ultimo valore `n` di ogni stazione, conservato tra un deploy e l'altro |
 | `/var/log/anemometer-collector/collector.log` | Log, ruotato ogni settimana da `/etc/logrotate.d/anemometer-collector` |
 
 Il servizio gira con l'utente di sistema `anemometer`, senza privilegi di root.

@@ -1,4 +1,5 @@
 #include "sim7080.h"
+#include "wind_clock.h"
 
 // Durata dell'impulso e attesa da verificare sul Hardware Design del modulo
 #define PWRKEY_PULSE_MS    1200UL
@@ -9,6 +10,7 @@
 #define PDP_TIMEOUT_MS     30000UL
 #define CFUN_TIMEOUT_MS    10000UL   // massimo indicato dal manuale
 #define ACTION_TIMEOUT_MS  10000UL
+#define NTP_TIMEOUT_MS     30000UL
 #define COAP_ACK_MS        100000UL  // comprende le ritrasmissioni CON del modem
 #define POLL_MS            5
 
@@ -253,6 +255,22 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
   Serial.println("SIM7080: connesso");
   _connected = true;
   return true;
+}
+
+// ── Ora ──────────────────────────────────────────────────────
+// Il manuale non indica il formato dell'ora restituita da AT+CNTP, mentre quello di
+// AT+CCLK e' documentato: si sincronizza il modem con NTP e poi si legge il suo orologio.
+bool Sim7080::syncTime(const char* ntpServer, uint32_t& unixSeconds) {
+  char cmd[96];
+  snprintf(cmd, sizeof(cmd), "AT+CNTP=\"%s\",0,0,0", ntpServer);
+  if (!command(cmd)) return false;
+
+  sendCmd("AT+CNTP");
+  if (!waitLine("+CNTP: 1", "+CNTP:", NTP_TIMEOUT_MS)) return false;
+
+  sendCmd("AT+CCLK?");
+  if (!waitLine("+CCLK:", "OK", 2000)) return false;
+  return parseModemClock(_line + strlen("+CCLK:"), unixSeconds);
 }
 
 // ── CoAP ─────────────────────────────────────────────────────

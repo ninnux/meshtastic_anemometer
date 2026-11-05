@@ -1,7 +1,7 @@
 """
 Ricevitore CoAP per anemometro_sim7080_coap: POST su /wind ogni 5 minuti con
 payload JSON {"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi,
-"n": contatore, "sig": firma}.
+"n": ora_unix, "sig": firma}.
 
 Accetta solo i messaggi firmati con le chiavi di STATION_KEYS. Senza INFLUX_URL nell'ambiente stampa soltanto i dati ricevuti.
 """
@@ -13,10 +13,11 @@ import math
 import os
 import re
 import tempfile
+import time
 
 import aiocoap
 import aiocoap.resource as resource
-from influxdb_client import InfluxDBClient, Point, WriteOptions
+from influxdb_client import InfluxDBClient, Point, WriteOptions, WritePrecision
 
 # --- CONFIGURAZIONE ---
 INFLUX_URL = os.environ.get("INFLUX_URL")
@@ -26,12 +27,14 @@ INFLUX_BUCKET = os.environ.get("INFLUX_BUCKET", "anemometri")
 COAP_BIND = os.environ.get("COAP_BIND", "::")
 COAP_PORT = int(os.environ.get("COAP_PORT", "5683"))
 STATION_KEYS = os.environ.get("STATION_KEYS", "")  # nome:chiave,nome:chiave
-STATE_FILE = os.environ.get("STATE_FILE", "")      # contatori dei messaggi già visti
+STATE_FILE = os.environ.get("STATE_FILE", "")      # ultimo valore n visto per ogni stazione
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 SIGNED_PATTERN = re.compile(rb'^(.*),"sig":"([0-9a-f]{32})"\}$', re.DOTALL)
 SIGNATURE_HEX_CHARS = 32
 MIN_KEY_LENGTH = 32
+MAX_MESSAGE_AGE_S = 15 * 60  # il messaggio parte dopo che il modem si è registrato in rete
+MAX_MESSAGE_AHEAD_S = 2 * 60  # differenza tollerata tra gli orologi
 
 
 class Unauthorized(Exception):
@@ -56,7 +59,7 @@ def parse_station_keys(spec):
 
 
 def parse_report(payload):
-    """Ritorna il report e il contatore. La firma viene controllata da Auth."""
+    """Ritorna il report e il campo n, l'ora Unix di misura. Firma e ora sono controllate da Auth."""
     try:
         data = json.loads(payload)
         name, counter = data["id"], data["n"]
@@ -66,12 +69,12 @@ def parse_report(payload):
     if not isinstance(name, str) or not NAME_PATTERN.match(name):
         raise Malformed("nome stazione non valido")
     if not isinstance(counter, int) or isinstance(counter, bool) or not 0 <= counter <= 0xFFFFFFFF:
-        raise Malformed("contatore non valido")
+        raise Malformed("campo n non valido")
     if not (math.isfinite(mean) and math.isfinite(max_)) or mean < 0 or max_ < 0:
         raise Malformed("velocità non valida")
     if not 0 <= direction <= 360:
         raise Malformed("direzione fuori intervallo")
-    return {"name": name, "mean": mean, "max": max_, "dir_deg": direction}, counter
+    return {"name": name, "mean": mean, "max": max_, "dir_deg": direction, "measured_at": counter}, counter
 
 
 class Auth:
@@ -101,9 +104,15 @@ class Auth:
         if not hmac.compare_digest(expected, signature):
             raise Unauthorized(f"firma errata per {report['name']!r}")
 
+        # Dopo la firma e prima di aggiornare l'ultimo valore: un messaggio con un'ora futura
+        # non deve poter bloccare la stazione per sempre.
+        age = time.time() - counter
+        if age > MAX_MESSAGE_AGE_S or age < -MAX_MESSAGE_AHEAD_S:
+            raise Unauthorized(f"ora di {report['name']!r} fuori finestra, differenza {age:.0f} s: controlla gli orologi")
+
         last = self.counters.get(report["name"], 0)
         if counter <= last:
-            raise Unauthorized(f"contatore {counter} già visto per {report['name']!r} (ultimo {last})")
+            raise Unauthorized(f"valore n {counter} già visto per {report['name']!r} (ultimo {last})")
         self.counters[report["name"]] = counter
         try:
             self.save()
@@ -144,7 +153,8 @@ class WindResource(resource.Resource):
                 .tag("sensor_name", report["name"]) \
                 .field("wind_mean", report["mean"]) \
                 .field("wind_max", report["max"]) \
-                .field("direction_deg", report["dir_deg"])
+                .field("direction_deg", report["dir_deg"]) \
+                .time(report["measured_at"], WritePrecision.S)
             self.write_api.write(bucket=INFLUX_BUCKET, record=point)
         print(f"Ricevuto {report['name']}: media {report['mean']}kn max {report['max']}kn dir {report['dir_deg']}", flush=True)
 
@@ -162,7 +172,7 @@ async def main():
     if not keys:
         print("STATION_KEYS non impostato: tutti i messaggi verranno rifiutati", flush=True)
     if not STATE_FILE:
-        print("STATE_FILE non impostato: dopo un riavvio i vecchi messaggi tornano validi", flush=True)
+        print("STATE_FILE non impostato: dopo un riavvio un messaggio ancora recente può essere riusato", flush=True)
 
     site = resource.Site()
     site.add_resource(["wind"], WindResource(Auth(keys, STATE_FILE), write_api))

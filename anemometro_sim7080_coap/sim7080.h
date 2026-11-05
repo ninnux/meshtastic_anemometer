@@ -24,6 +24,9 @@ public:
   bool coapPost(uint16_t messageId, const char* path, uint8_t contentFormat,
                 const char* payload, bool confirmable);
 
+  // Sincronizza l'ora del modem via NTP e la legge in secondi Unix. Richiede connect().
+  bool syncTime(const char* ntpServer, uint32_t& unixSeconds);
+
   // Smette di usare il modem, che resta registrato ed entra da solo in PSM
   // quando la rete rilascia la connessione e scade l'active time.
   // Il prossimo connect lo risveglia.

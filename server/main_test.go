@@ -42,18 +42,22 @@ func (c *collected) count() int {
 
 const testKey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
+// Ora del vettore di prova condiviso con il firmware
+const testNow = 1793865182
+
 func newTestAuth(t *testing.T) *Auth {
 	t.Helper()
 	auth, err := NewAuth(map[string][]byte{"first_anemometer": []byte(testKey)}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	auth.now = func() time.Time { return time.Unix(testNow, 0) }
 	return auth
 }
 
-// signedPayload firma come il firmware
-func signedPayload(key string, counter int) string {
-	prefix := fmt.Sprintf(`{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":%d`, counter)
+// signedPayload firma come il firmware. offset è in secondi rispetto a testNow.
+func signedPayload(key string, offset int) string {
+	prefix := fmt.Sprintf(`{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":%d`, testNow+offset)
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(prefix))
 	return prefix + `,"sig":"` + hex.EncodeToString(mac.Sum(nil)[:signatureBytes]) + `"}`
@@ -110,7 +114,8 @@ func TestConfirmableValid(t *testing.T) {
 	if code := postCON(t, conn, "/wind", signedPayload(testKey, 1)); code != codes.Changed {
 		t.Fatalf("codice %v", code)
 	}
-	if c.count() != 1 || !strings.HasPrefix(c.lines[0], "meteo,sensor_name=first_anemometer wind_mean=10.8,wind_max=15.1,direction_deg=225i ") {
+	want := fmt.Sprintf("meteo,sensor_name=first_anemometer wind_mean=10.8,wind_max=15.1,direction_deg=225i %d", testNow+1)
+	if c.count() != 1 || c.lines[0] != want { // l'orario del punto è quello di misura
 		t.Fatalf("righe: %v", c.lines)
 	}
 }
@@ -141,7 +146,7 @@ func TestConfirmableWrongSignature(t *testing.T) {
 func TestUnsignedMessageRejected(t *testing.T) {
 	c := &collected{}
 	conn := dial(t, startServer(t, c))
-	if code := postCON(t, conn, "/wind", `{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":1}`); code != codes.BadRequest {
+	if code := postCON(t, conn, "/wind", fmt.Sprintf(`{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":%d}`, testNow)); code != codes.BadRequest {
 		t.Fatalf("codice %v", code)
 	}
 	if c.count() != 0 {

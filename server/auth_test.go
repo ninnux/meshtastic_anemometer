@@ -10,17 +10,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Generato dal firmware e calcolato anche con hmac di Python: vedi test_sim7080.cpp
-const firmwareVector = `{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":65537,"sig":"3a482c440614dcc4d24ea0c6a99eed20"}`
+const firmwareVector = `{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":1793865182,"sig":"684020558e98f5a3ce8e48347f52966a"}`
 
 func TestVerifyFirmwareVector(t *testing.T) {
 	report, err := newTestAuth(t).Verify([]byte(firmwareVector))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report != (Report{Name: "first_anemometer", Mean: 10.8, Max: 15.1, Direction: 225}) {
+	if report != (Report{Name: "first_anemometer", Mean: 10.8, Max: 15.1, Direction: 225, MeasuredAt: time.Unix(testNow, 0)}) {
 		t.Fatalf("report errato: %+v", report)
 	}
 }
@@ -30,9 +31,9 @@ func TestVerifyRejectsTampering(t *testing.T) {
 	cases := map[string]string{
 		"velocità":  strings.Replace(firmwareVector, "10.8", "99.9", 1),
 		"direzione": strings.Replace(firmwareVector, "225", "226", 1),
-		"contatore": strings.Replace(firmwareVector, "65537", "65538", 1),
+		"ora":       strings.Replace(firmwareVector, "1793865182", "1793865183", 1),
 		"spazio":    strings.Replace(firmwareVector, `"mean":10.8`, `"mean": 10.8`, 1),
-		"firma":     strings.Replace(firmwareVector, "3a482c440614dcc4d24ea0c6a99eed20", "00000000000000000000000000000000", 1),
+		"firma":     strings.Replace(firmwareVector, "684020558e98f5a3ce8e48347f52966a", "00000000000000000000000000000000", 1),
 		"stazione":  strings.Replace(firmwareVector, "first_anemometer", "altra", 1),
 	}
 	for name, payload := range cases {
@@ -48,7 +49,7 @@ func TestVerifyMalformedSignature(t *testing.T) {
 		"firma corta":   `{"id":"first_anemometer","mean":1,"max":1,"dir":1,"n":1,"sig":"abcd"}`,
 		"firma maiusc.": strings.ToUpper(firmwareVector),
 		"campo dopo":    strings.TrimSuffix(firmwareVector, "}") + `,"x":"y"}`,
-		"non json":      `xx,"sig":"3a482c440614dcc4d24ea0c6a99eed20"}`,
+		"non json":      `xx,"sig":"684020558e98f5a3ce8e48347f52966a"}`,
 	}
 	for name, payload := range cases {
 		if _, err := newTestAuth(t).Verify([]byte(payload)); !errors.Is(err, errMalformed) {
@@ -62,30 +63,50 @@ func TestVerifyRejectsOldCounters(t *testing.T) {
 	for _, step := range []struct {
 		counter int
 		ok      bool
-	}{{10, true}, {10, false}, {9, false}, {11, true}, {1000000, true}, {500, false}} {
+	}{{10, true}, {10, false}, {9, false}, {11, true}, {100, true}, {50, false}} {
 		_, err := a.Verify([]byte(signedPayload(testKey, step.counter)))
 		if step.ok && err != nil {
-			t.Errorf("contatore %d: %v", step.counter, err)
+			t.Errorf("offset %d: %v", step.counter, err)
 		}
 		if !step.ok && !errors.Is(err, errUnauthorized) {
-			t.Errorf("contatore %d: errore %v", step.counter, err)
+			t.Errorf("offset %d: errore %v", step.counter, err)
 		}
 	}
 }
 
-// Un messaggio falso non deve far avanzare il contatore, altrimenti bloccherebbe la stazione
+func TestTimeWindow(t *testing.T) {
+	maxAge, maxAhead := int(maxMessageAge.Seconds()), int(maxMessageAhead.Seconds())
+	for _, step := range []struct {
+		offset int
+		ok     bool
+	}{{-maxAge - 1, false}, {-maxAge, true}, {0, true}, {maxAhead, true}, {maxAhead + 1, false}} {
+		_, err := newTestAuth(t).Verify([]byte(signedPayload(testKey, step.offset)))
+		if step.ok && err != nil {
+			t.Errorf("offset %d: %v", step.offset, err)
+		}
+		if !step.ok && !errors.Is(err, errUnauthorized) {
+			t.Errorf("offset %d: errore %v", step.offset, err)
+		}
+	}
+}
+
+// Un messaggio scartato non deve far avanzare l'ultimo valore, altrimenti bloccherebbe la stazione
 func TestRejectedMessageDoesNotAdvanceCounter(t *testing.T) {
 	a := newTestAuth(t)
-	if _, err := a.Verify([]byte(signedPayload("chiave-falsa-chiave-falsa-chiave-falsa", 1000))); err == nil {
+	if _, err := a.Verify([]byte(signedPayload("chiave-falsa-chiave-falsa-chiave-falsa", 60))); err == nil {
 		t.Fatal("firma falsa accettata")
+	}
+	// Una stazione con l'orologio avanti, per esempio per un NTP manipolato
+	if _, err := a.Verify([]byte(signedPayload(testKey, 100000))); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("ora futura accettata: %v", err)
 	}
 	if _, err := a.Verify([]byte(signedPayload(testKey, 1))); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func signedBy(name, key string, counter int) []byte {
-	prefix := fmt.Sprintf(`{"id":"%s","mean":1,"max":2,"dir":3,"n":%d`, name, counter)
+func signedBy(name, key string, offset int) []byte {
+	prefix := fmt.Sprintf(`{"id":"%s","mean":1,"max":2,"dir":3,"n":%d`, name, testNow+offset)
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(prefix))
 	return []byte(prefix + `,"sig":"` + hex.EncodeToString(mac.Sum(nil)[:signatureBytes]) + `"}`)
@@ -98,7 +119,8 @@ func TestStationsAreIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Verify(signedBy("nodo_a", keyA, 1000)); err != nil {
+	a.now = func() time.Time { return time.Unix(testNow, 0) }
+	if _, err := a.Verify(signedBy("nodo_a", keyA, 100)); err != nil {
 		t.Fatal(err)
 	}
 	// Il contatore alto di un nodo non blocca l'altro
@@ -122,6 +144,7 @@ func TestCountersSurviveRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	first.now = func() time.Time { return time.Unix(testNow, 0) }
 	if _, err := first.Verify([]byte(signedPayload(testKey, 42))); err != nil {
 		t.Fatal(err)
 	}
@@ -130,6 +153,7 @@ func TestCountersSurviveRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	second.now = first.now
 	if _, err := second.Verify([]byte(signedPayload(testKey, 42))); !errors.Is(err, errUnauthorized) {
 		t.Fatalf("messaggio riusato dopo il riavvio: %v", err)
 	}

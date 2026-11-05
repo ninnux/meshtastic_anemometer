@@ -27,7 +27,7 @@ mv -f "/usr/local/bin/.$NAME.new" "/usr/local/bin/$NAME"
 install -m 0755 -o root -g root "$NAME.init" "/etc/init.d/$NAME"
 install -m 0644 -o root -g root "$NAME.logrotate" "/etc/logrotate.d/$NAME"
 install -d -m 0750 -o "$USER_NAME" -g adm "/var/log/$NAME"
-# I contatori impediscono di riusare vecchi messaggi: vanno conservati tra un deploy e l'altro
+# L'ultimo valore visto impedisce di riusare un messaggio recente: va conservato tra un deploy e l'altro
 install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "/var/lib/$NAME"
 
 # La configurazione esistente non viene mai sovrascritta: contiene il token

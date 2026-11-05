@@ -1,5 +1,5 @@
 // Ricevitore CoAP per anemometro_sim7080_coap: POST su /wind con payload JSON
-// {"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi, "n": contatore, "sig": firma}.
+// {"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi, "n": ora_unix, "sig": firma}.
 //
 // Accetta solo i messaggi firmati con le chiavi di STATION_KEYS. Senza INFLUX_URL
 // nell'ambiente registra soltanto i dati ricevuti.
@@ -15,7 +15,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/plgd-dev/go-coap/v3/message"
 	"github.com/plgd-dev/go-coap/v3/message/codes"
@@ -57,7 +56,7 @@ func windHandler(auth *Auth, store func(line string)) mux.HandlerFunc {
 			var report Report
 			if report, err = auth.Verify(payload); err == nil {
 				if store != nil {
-					store(report.LineProtocol(time.Now()))
+					store(report.LineProtocol())
 				}
 				log.Printf("ricevuto %s: media %gkn max %gkn dir %d", report.Name, report.Mean, report.Max, report.Direction)
 				reply(w, r, codes.Changed)
@@ -122,7 +121,7 @@ func run() error {
 	}
 	statePath := os.Getenv("STATE_FILE")
 	if statePath == "" {
-		log.Print("STATE_FILE non impostato: dopo un riavvio i vecchi messaggi tornano validi")
+		log.Print("STATE_FILE non impostato: dopo un riavvio un messaggio ancora recente può essere riusato")
 	}
 	auth, err := NewAuth(keys, statePath)
 	if err != nil {

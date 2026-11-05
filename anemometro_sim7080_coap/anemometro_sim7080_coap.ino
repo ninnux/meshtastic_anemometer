@@ -12,9 +12,8 @@
 #include <math.h>
 #include "secrets.h"  // creato da secrets.example.h, non e' nel repository
 #include "sim7080.h"
+#include "wind_clock.h"
 #include "wind_report.h"
-
-using namespace Adafruit_LittleFS_Namespace;
 
 // ── Pin ──────────────────────────────────────────────────────
 #define WindSensorPin  2
@@ -40,8 +39,7 @@ using namespace Adafruit_LittleFS_Namespace;
 // ── Invio ────────────────────────────────────────────────────
 #define REPORT_PERIOD_S 300
 #define FAILS_TO_RESET  3  // errori consecutivi prima dello spegnimento completo
-#define COUNTER_FILE     "/message_epoch.bin"
-#define COUNTER_TEMP_FILE "/message_epoch.tmp"
+#define NTP_SERVER      "pool.ntp.org"
 
 // ── BLE ──────────────────────────────────────────────────────
 BLEService        windService("A0010000-0001-0001-0001-000000000001");
@@ -87,8 +85,7 @@ SemaphoreHandle_t sampleSemaphore;
 QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vince l'ultimo
 
 Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
-MessageCounter messageCounter;
-bool counterLoaded = false;
+WindClock windClock;
 
 // ── Prototipi ────────────────────────────────────────────────
 void isr_timer_cb(TimerHandle_t xTimerID);
@@ -98,8 +95,7 @@ int  meanWindDirection();
 void queueReport();
 void modemLoop();
 bool sendReport(const WindReport& report);
-bool loadCounterEpoch();
-bool saveCounterEpoch();
+bool syncClockIfNeeded();
 void setupBLE();
 void updateBLE();
 void startAdvertising();
@@ -127,9 +123,6 @@ void setup() {
   analogReference(AR_VDD4);
 
   setupBLE();
-
-  InternalFS.begin();
-  counterLoaded = loadCounterEpoch();
 
   lastAdvStart = millis() - ADV_PERIOD_MS;
 
@@ -231,7 +224,7 @@ void loop() {
 // Report – Prepara i valori del periodo per il task del modem
 // ============================================================
 void queueReport() {
-  WindReport report = { WindSpeedMean, WindSpeedMax, meanWindDirection() };
+  WindReport report = { WindSpeedMean, WindSpeedMax, meanWindDirection(), millis() };
   xQueueOverwrite(reportQueue, &report);
 }
 
@@ -251,20 +244,10 @@ void modemLoop() {
   WindReport report;
   if (xQueueReceive(reportQueue, &report, portMAX_DELAY) != pdTRUE) return;
 
-  // Senza contatore il messaggio verrebbe scartato: non si spreca energia col modem
-  if (!counterLoaded) {
-    Serial.println("Contatore in flash illeggibile: invii sospesi, vedi README");
-    return;
-  }
-  if (messageCounter.exhausted()) {
-    Serial.println("Contatore esaurito: invii sospesi, vedi README");
-    return;
-  }
-
   Serial1.begin(MODEM_BAUD_RATE);
 
   bool sent = false;
-  if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT)) {
+  if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT) && syncClockIfNeeded()) {
     sent = sendReport(report);
   }
 
@@ -286,14 +269,9 @@ bool sendReport(const WindReport& report) {
   // scambi i messaggi dopo una riaccensione per duplicati di quelli precedenti.
   static uint16_t messageId = (uint16_t)millis();
 
-  if (!messageCounter.ready() && !saveCounterEpoch()) {
-    Serial.println("Contatore non salvato in flash: report non inviato");
-    return false;
-  }
-
   char payload[128];
   if (!formatSignedWindPayload(payload, sizeof(payload), NODE_NAME, report,
-                               messageCounter.next(), STATION_KEY)) {
+                               windClock.timestamp(report.closedMs), STATION_KEY)) {
     Serial.println("Report troppo lungo");
     return false;
   }
@@ -305,40 +283,18 @@ bool sendReport(const WindReport& report) {
   return sent;
 }
 
-// Il server scarta i contatori gia' visti: l'epoca deve crescere a ogni avvio.
-// Un file illeggibile blocca gli invii: ripartire da zero non servirebbe.
-bool loadCounterEpoch() {
-  if (!InternalFS.exists(COUNTER_FILE)) {
-    messageCounter.restore(0);
+// Il campo n del messaggio e' l'ora di misura: senza un'ora valida il server lo scarterebbe.
+// Se la sincronizzazione fallisce ma l'ora e' ancora buona, si invia comunque.
+bool syncClockIfNeeded() {
+  if (!windClock.needsSync(millis())) return true;
+
+  uint32_t unixSeconds;
+  if (modem.syncTime(NTP_SERVER, unixSeconds)) {
+    windClock.sync(unixSeconds, millis());
     return true;
   }
-
-  File file(InternalFS);
-  if (!file.open(COUNTER_FILE, FILE_O_READ)) return false;
-  uint32_t epoch = 0;
-  bool valid = file.size() == sizeof(epoch)
-            && file.read(&epoch, sizeof(epoch)) == sizeof(epoch)
-            && epoch <= 0xFFFF;
-  file.close();
-
-  if (valid) messageCounter.restore((uint16_t)epoch);
-  return valid;
-}
-
-// Salvato solo al primo invio: riavvii ripetuti senza invii non consumano ne' epoche
-// ne' flash. File temporaneo e rinomina: un'interruzione a meta' lascia il valore vecchio.
-bool saveCounterEpoch() {
-  uint32_t epoch = messageCounter.nextEpoch();
-
-  InternalFS.remove(COUNTER_TEMP_FILE);
-  File file(InternalFS);
-  if (!file.open(COUNTER_TEMP_FILE, FILE_O_WRITE)) return false;
-  bool written = file.write((const uint8_t*)&epoch, sizeof(epoch)) == sizeof(epoch);
-  file.close();
-
-  if (!written || !InternalFS.rename(COUNTER_TEMP_FILE, COUNTER_FILE)) return false;
-  messageCounter.epochSaved();
-  return true;
+  Serial.println("Sincronizzazione NTP fallita");
+  return windClock.usable(millis());
 }
 
 // ============================================================
