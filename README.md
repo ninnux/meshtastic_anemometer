@@ -26,7 +26,7 @@ Lato server, uno script Python riceve i messaggi Meshtastic e li salva su **Infl
 |---|---|
 | `anemometro_bluetooth_stringaunica/` | Firmware base: velocità + direzione dalla banderuola, invio Meshtastic + BLE. |
 | `meshtastic_davis_anemometer_compensated/` | Firmware per XIAO nRF52840 **Sense**: aggiunge bussola QMC5883L + IMU LSM6DS3 per compensare la direzione con l'orientamento del dispositivo (tilt-compensated heading). Sperimentale. |
-| `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP ogni 60 s su rete cellulare, modem in PSM tra un invio e l'altro, BLE invariato. |
+| `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP ogni 5 minuti su rete cellulare, modem in PSM tra un invio e l'altro, BLE invariato. |
 | `collector_coap.py` | Ricevitore CoAP del firmware SIM7080: scrive su InfluxDB. |
 | `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, massima e direzione. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
@@ -86,7 +86,7 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 ### Versione SIM7080 + CoAP
 
-`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Ogni 60 s invia un messaggio con 6 finestre da 10 s, ciascuna con media e massima (nodi) e direzione (media vettoriale dei campioni, in gradi), usando il client CoAP del modem (`AT+CCOAP*`).
+`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Velocità e direzione vengono lette ogni secondo. Ogni 5 minuti (`REPORT_PERIOD_S`) il firmware invia la media e la massima del periodo (nodi) e la media vettoriale della direzione (gradi), usando il client CoAP del modem (`AT+CCOAP*`). La massima è il valore più alto su un secondo. Lo stesso periodo vale per i valori `M` e `X` del BLE, che vengono azzerati a ogni invio.
 
 **Collegamenti:** `D6` (TX) → RX modem, `D7` (RX) ← TX modem, `D1` → PWRKEY (obbligatorio, serve a risvegliare il modem dal PSM), GND in comune, a 115200 baud. Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche lavorano a 1,8 V: se il modulo non ha un traslatore di livello, serve aggiungerlo.
 
@@ -95,17 +95,19 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 **Messaggio:** CoAP POST su `coap://<server>:5683/wind`, Content-Format `application/json`, non confermabile (NON) salvo `COAP_CONFIRMABLE`:
 
 ```json
-{"id":"first_anemometer","mean":[10.8,11.2,9.7,10.1,12.3,11.0],"max":[15.1,14.2,12.0,13.5,16.8,14.0],"dir":[225,230,218,222,240,235]}
+{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225}
 ```
 
-I valori vanno dalla finestra più vecchia alla più recente. Il messaggio è di circa 170 byte con le intestazioni IP/UDP, quindi circa 7,5 MB al mese escluso l'overhead dell'operatore.
+Il messaggio è di circa 100 byte con le intestazioni IP/UDP, quindi meno di 1 MB al mese escluso l'overhead dell'operatore.
+
+**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
 
 **Risparmio energetico (PSM):** il modem non si spegne: resta registrato in rete e dopo ogni invio torna a dormire con il Power Saving Mode (`AT+CPSMS`), con o senza vento.
 
-- Ogni 60 s il firmware apre la UART, sveglia il modem con un impulso su PWRKEY (se non risponde già ai comandi), ricontrolla registrazione e PDP, reinizializza il client CoAP, invia il report e richiude la UART.
+- Ogni 5 minuti il firmware apre la UART, sveglia il modem con un impulso su PWRKEY (se non risponde già ai comandi), ricontrolla registrazione e PDP, reinizializza il client CoAP, invia il report e richiude la UART.
 - Il firmware richiede alla rete un active time di 2 s e un TAU periodico di 2 ore. La rete può assegnare valori diversi: il log mostra la riga `+CPSMRDP:`, dove il quarto valore è l'active time assegnato e 0 significa PSM non supportato. In quel caso il modem resta sveglio e funziona comunque.
-- Il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto, quindi dorme meno di 60 s. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
-- Lo spegnimento completo (`AT+CPOWD=1`) resta solo come recupero: dopo 3 errori consecutivi il modem viene spento per 10 minuti, poi riacceso.
+- Il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto, quindi dorme un po' meno dei 5 minuti. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
+- Lo spegnimento completo (`AT+CPOWD=1`) resta solo come recupero: dopo 3 errori consecutivi il modem viene spento e riacceso al report successivo.
 
 **Funzionamento:**
 
@@ -120,7 +122,7 @@ pip install aiocoap influxdb-client
 INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 ```
 
-Per ogni messaggio scrive 6 punti nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario di ogni punto è stimato da quello di ricezione, a passi di 10 s; senza `INFLUX_URL` stampa soltanto i dati. Serve la porta UDP 5683 raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque conosca l'indirizzo può inviare dati.
+Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario è quello di ricezione e i valori si riferiscono ai 5 minuti precedenti; senza `INFLUX_URL` stampa soltanto i dati. Serve la porta UDP 5683 raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque conosca l'indirizzo può inviare dati.
 
 **Test sul computer** (driver con modem simulato): vedi il comando in testa a `anemometro_sim7080_coap/test/test_sim7080.cpp`.
 

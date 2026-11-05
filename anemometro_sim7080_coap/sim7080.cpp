@@ -17,8 +17,8 @@
 
 // Valori richiesti alla rete, che puo' assegnarne altri (vedi AT+CPSMRDP).
 // Codifica in 3GPP TS 24.008: 3 bit di unita' + 5 bit di valore.
-// L'active time e' il minimo diverso da zero: tra due report passa solo un
-// minuto, e per il manuale un valore assegnato pari a 0 indica PSM non supportato.
+// L'active time e' il minimo diverso da zero, cosi' il modem dorme subito dopo
+// l'invio. Per il manuale un valore assegnato pari a 0 indica PSM non supportato.
 #define PSM_PERIODIC_TAU   "00100010"  // unita' 1 h x 2 = 2 ore
 #define PSM_ACTIVE_TIME    "00000001"  // unita' 2 s x 1 = 2 s
 

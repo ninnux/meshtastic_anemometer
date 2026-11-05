@@ -32,9 +32,9 @@
 #define COAP_CONFIRMABLE false  // true: rileva anche un server spento, con piu' traffico
 #define COAP_CONTENT_FORMAT_JSON 50
 
-// ── Gestione errori ──────────────────────────────────────────
-#define FAILS_TO_RESET     3                 // errori consecutivi prima dello spegnimento completo
-#define FAILURE_BACKOFF_MS (10UL * 60000UL)  // pausa dopo lo spegnimento, se manca la rete
+// ── Invio ────────────────────────────────────────────────────
+#define REPORT_PERIOD_S 300
+#define FAILS_TO_RESET  3  // errori consecutivi prima dello spegnimento completo
 
 // ── BLE ──────────────────────────────────────────────────────
 BLEService        windService("A0010000-0001-0001-0001-000000000001");
@@ -52,9 +52,9 @@ bool     isAdvertising = false;
 SoftwareTimer sampleTimer;
 
 // ── Variabili anemometro ─────────────────────────────────────
-volatile bool     IsWindowRequired      = false;
+volatile bool     IsReportRequired      = false;
 volatile bool     IsBLEUpdateRequired   = false;
-volatile uint8_t  TimerCount            = 0;
+volatile uint16_t TimerCount            = 0;
 volatile uint32_t Rotations             = 0;
 volatile uint32_t ContactBounceTime     = 0;
 
@@ -62,7 +62,8 @@ float WindSpeed         = 0.0f;
 float WindSpeedMean     = 0.0f;
 float WindSpeedMax      = 0.0f;
 float WindSpeedSum      = 0.0f;
-int   WindSpeedDiv      = 0;
+float WindTimeSum       = 0.0f;
+uint32_t LastSampleMs   = 0;
 float WindDirSinSum     = 0.0f;
 float WindDirCosSum     = 0.0f;
 int   vaneValue         = 0;
@@ -81,7 +82,7 @@ void isr_timer_cb(TimerHandle_t xTimerID);
 void isr_rotation();
 void getWindDirection();
 int  meanWindDirection();
-void closeWindow();
+void queueReport();
 void modemLoop();
 bool sendReport(const WindReport& report);
 void setupBLE();
@@ -104,6 +105,11 @@ void setup() {
 
   pinMode(WindSensorPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(WindSensorPin), isr_rotation, FALLING);
+  LastSampleMs = millis();
+
+  // Il default e' 0-3.6 V: con la banderuola a 3.3 V la lettura si fermerebbe
+  // attorno a 330°. Con VDD come riferimento non dipende dalla tensione.
+  analogReference(AR_VDD4);
 
   setupBLE();
 
@@ -148,15 +154,21 @@ void loop() {
   // ── Calcolo vento ─────────────────────────────────────────
   getWindDirection();
 
+  uint32_t sampleMs = millis();
   noInterrupts();
   float rot = (float) Rotations/ 3.0f;
   Rotations = 0;
   interrupts();
 
-  WindSpeed = rot * 0.9f * 3.0f * 0.868976f;
-  WindSpeedDiv++;
-  WindSpeedSum += WindSpeed;
-  WindSpeedMean = WindSpeedSum / WindSpeedDiv;
+  // Si usa il tempo misurato: un campione in ritardo conterrebbe piu' rotazioni
+  // e, diviso per 1 s fisso, risulterebbe una falsa raffica.
+  float elapsedS = (sampleMs - LastSampleMs) / 1000.0f;
+  LastSampleMs = sampleMs;
+
+  WindSpeed = rot * 0.9f * 3.0f * 0.868976f / elapsedS;
+  WindSpeedSum += WindSpeed * elapsedS;
+  WindTimeSum  += elapsedS;
+  WindSpeedMean = WindSpeedSum / WindTimeSum;
   if (WindSpeed > WindSpeedMax) WindSpeedMax = WindSpeed;
 
   float dirRad = radians(windCalDirection);
@@ -178,12 +190,12 @@ void loop() {
     }
   }
 
-  // ── Chiusura finestra ogni 10s ────────────────────────────
-  if (IsWindowRequired) {
-    IsWindowRequired = false;
-    closeWindow();
+  // ── Report ogni 5 minuti ──────────────────────────────────
+  if (IsReportRequired) {
+    IsReportRequired = false;
+    queueReport();
     WindSpeedSum  = 0;
-    WindSpeedDiv  = 0;
+    WindTimeSum   = 0;
     WindSpeedMean = 0;
     WindSpeedMax  = 0;
     WindDirSinSum = 0;
@@ -192,21 +204,11 @@ void loop() {
 }
 
 // ============================================================
-// Report – Registra la finestra da 10 s e, completato il minuto,
-// passa le 6 finestre al task del modem
+// Report – Prepara i valori del periodo per il task del modem
 // ============================================================
-void closeWindow() {
-  static WindReport report;
-  static uint8_t    window = 0;
-
-  report.mean[window] = WindSpeedMean;
-  report.max[window]  = WindSpeedMax;
-  report.dir[window]  = meanWindDirection();
-
-  if (++window >= WIND_WINDOWS) {
-    window = 0;
-    xQueueOverwrite(reportQueue, &report);
-  }
+void queueReport() {
+  WindReport report = { WindSpeedMean, WindSpeedMax, meanWindDirection() };
+  xQueueOverwrite(reportQueue, &report);
 }
 
 // Media vettoriale: la media aritmetica di 350° e 10° darebbe 180° invece di 0°
@@ -229,8 +231,6 @@ void modemLoop() {
 
   bool sent = false;
   if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT)) {
-    // Se la connessione e' stata lunga, intanto puo' essere pronto un report piu' recente
-    xQueueReceive(reportQueue, &report, 0);
     sent = sendReport(report);
   }
 
@@ -240,7 +240,6 @@ void modemLoop() {
     failures = 0;
     modem.powerOff();
     Serial1.end();
-    delay(FAILURE_BACKOFF_MS);
     return;
   }
 
@@ -253,7 +252,7 @@ bool sendReport(const WindReport& report) {
   // scambi i messaggi dopo una riaccensione per duplicati di quelli precedenti.
   static uint16_t messageId = (uint16_t)millis();
 
-  char payload[200];
+  char payload[96];
   if (!formatWindPayload(payload, sizeof(payload), NODE_NAME, report)) {
     Serial.println("Report troppo lungo");
     return false;
@@ -337,9 +336,9 @@ void isr_timer_cb(TimerHandle_t xTimerID) {
   (void)xTimerID;
   TimerCount++;
 
-  // finestra ogni 20 tick (10 s), impostata prima di risvegliare il loop
-  if (TimerCount >= 20) {
-    IsWindowRequired = true;
+  // report ogni REPORT_PERIOD_S (2 tick al secondo), impostato prima di risvegliare il loop
+  if (TimerCount >= REPORT_PERIOD_S * 2) {
+    IsReportRequired = true;
     TimerCount = 0;
   }
 
