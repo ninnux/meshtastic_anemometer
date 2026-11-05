@@ -357,16 +357,45 @@ La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360
 
 #### Collegamenti
 
-| XIAO | Modem | Note |
+Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_bridge`.
+
+```
+                         Seeed XIAO nRF52840
+                       ┌─────────────────────┐
+ Anemometro            │                     │            Modem SIM7080G
+   contatto ──────┬────┤ D2                  │          ┌──────────────────┐
+                  │    │                  D6 ├── TX ───▶│ RX               │
+             pull-up   │                  D7 │◀── RX ───┤ TX               │
+              10 kΩ    │                  D1 ├─────────▶│ PWRKEY           │
+                  │    │                     │          │                  │
+           3V3 ───┴────┤ 3V3                 │          │             VBAT │◀── alimentazione
+                       │                     │          │                  │    separata
+ Banderuola            │                     │          │                  │    (+)
+   alimentazione ──────┤ 3V3                 │          │                  │
+   cursore ────────────┤ A3                  │          │                  │
+   massa ─────────┬────┤ GND                 │     ┌────┤ GND              │
+                  │    └─────────────────────┘     │    └──────────────────┘
+ Anemometro       │                                │
+   contatto ──────┤                                │
+                  └────────────────────────────────┴─── massa comune ───▶ alimentazione (−)
+```
+
+| XIAO | Collegato a | Note |
 |---|---|---|
-| `D6` (TX) | RX | UART a 115200 baud |
-| `D7` (RX) | TX | |
-| `D1` | PWRKEY | obbligatorio: serve ad accendere il modem e a risvegliarlo dal PSM |
-| `GND` | GND | massa in comune |
+| `D2` | contatto dell'anemometro | l'altro capo va a massa. Il pin non ha il pull-up attivo nel firmware, quindi serve una resistenza esterna verso 3V3, ad esempio da 10 kΩ |
+| `A3` | cursore della banderuola | il potenziometro va tra `3V3` e `GND` della XIAO, perché è letto con riferimento VDD |
+| `D6` (TX) | RX del modem | UART a 115200 baud |
+| `D7` (RX) | TX del modem | |
+| `D1` | PWRKEY del modem | obbligatorio: serve ad accendere il modem e a risvegliarlo dal PSM |
+| `GND` | massa del modem e dell'alimentazione | massa in comune obbligatoria |
 
-Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche dovrebbero lavorare a 1,8 V: controlla sul manuale della tua scheda e, se non ha un traslatore di livello, aggiungilo.
+**Prima di dare corrente:**
 
-Anemometro su `D2` e banderuola su `A3`, come nel firmware base.
+- **Alimentazione del modem:** va alimentato a parte, non dal pin 3V3 della XIAO. In trasmissione ha picchi di centinaia di mA, e alcune fonti indicano fino a 2 A, quindi serve un'alimentazione adatta con un condensatore vicino al modulo. Controlla la tensione ammessa sul manuale della tua scheda.
+- **Livelli logici:** le linee del modulo SIM7080G dovrebbero lavorare a 1,8 V, mentre la XIAO lavora a 3,3 V. Molte schede hanno già il traslatore di livello: controlla la tua. Se non c'è, va aggiunto su RX, TX e PWRKEY.
+- **PWRKEY:** `MODEM_PWRKEY_ACTIVE` è `HIGH` se la scheda ha un transistor sulla linea, `LOW` se il pin è collegato direttamente al modulo.
+- **Antenna e SIM:** non trasmettere senza antenna collegata, e inserisci la SIM a modem spento.
+- **Colori dei fili:** in un Davis 6410 dovrebbero essere nero per il contatto dell'anemometro, rosso per la massa, verde per il cursore e giallo per l'alimentazione della banderuola. Li cito a memoria: verificali con un multimetro. Il contatto dell'anemometro si chiude tra nero e rosso.
 
 #### Parametri in testa allo sketch
 
