@@ -139,20 +139,78 @@ Ogni stazione ha nome, chiave e contatore propri. Il server sceglie la chiave in
 
 Non usare la stessa chiave o lo stesso nome su due stazioni. Con la stessa chiave ne basterebbe una compromessa per falsificarle tutte. Con lo stesso nome condividerebbero il contatore, e i messaggi di una verrebbero scartati come già visti.
 
-**Aggiungere una stazione:**
-
-1. Ripeti i passi 2-5 con una chiave nuova e un `NODE_NAME` diverso. `secrets.h` è unico nella cartella, quindi va aggiornato prima di ogni compilazione.
-2. Aggiungi la coppia sul server, separata da una virgola, e riavvia il servizio:
-
-   ```sh
-   STATION_KEYS="first_anemometer:chiave_uno,seconda_stazione:chiave_due"
-   ```
-
-Il riavvio non azzera i contatori delle altre stazioni.
+Per inserire una stazione segui [Aggiungere un nuovo nodo](#aggiungere-un-nuovo-nodo).
 
 **Sostituire una chiave:** per esempio se la stazione è stata rubata. Generane una nuova, aggiornala in `secrets.h` e in `STATION_KEYS`, ricarica il firmware e riavvia il servizio. Fino al caricamento, i messaggi della stazione vengono rifiutati.
 
 **Rimuovere una stazione:** togli la sua coppia da `STATION_KEYS` e riavvia il servizio. Da quel momento i suoi messaggi vengono rifiutati.
+
+### Aggiungere un nuovo nodo
+
+Il server è già installato, quindi non serve rifare il deploy. Le altre stazioni non vanno toccate: mantengono chiavi e contatori.
+
+**1. Scegli il nome e genera la chiave**
+
+Il nome deve essere diverso da quello di tutte le altre stazioni: lettere, numeri, `_` e `-`, massimo 32 caratteri.
+
+```bash
+openssl rand -hex 32
+```
+
+Conserva la chiave in un posto sicuro, come un gestore di password, insieme al nome del nodo.
+
+**2. Configura il firmware**
+
+In `anemometro_sim7080_coap/secrets.h` metti la chiave del nuovo nodo. Se il file non esiste, crealo da `secrets.example.h` come al [passo 2](#2-genera-la-chiave-della-stazione).
+
+```cpp
+#define STATION_KEY "chiave_del_nuovo_nodo"
+```
+
+In `anemometro_sim7080_coap/anemometro_sim7080_coap.ino` imposta il nome e controlla gli altri parametri:
+
+```cpp
+#define NODE_NAME        "nuovo_nodo"
+#define COAP_SERVER_IP   "indirizzo_del_server"
+#define MODEM_APN        "apn_della_sim"
+```
+
+`secrets.h` e `NODE_NAME` valgono per una sola stazione alla volta: aggiornali entrambi prima di compilare per un'altra. Non committare `NODE_NAME` e `COAP_SERVER_IP` specifici di una stazione.
+
+**3. Carica il firmware sul nuovo nodo**
+
+Collega la scheda del nuovo nodo, e solo quella, poi:
+
+```bash
+pio run -e sim7080 -t upload
+```
+
+**4. Aggiungi la chiave sul server**
+
+In `/etc/default/anemometer-collector` aggiungi la coppia in fondo a `STATION_KEYS`, separata da una virgola e senza togliere le altre:
+
+```sh
+STATION_KEYS="first_anemometer:chiave_uno,nuovo_nodo:chiave_del_nuovo_nodo"
+```
+
+Il nome deve essere identico a `NODE_NAME`, e la chiave identica a quella in `secrets.h`. Poi riavvia il servizio, perché le chiavi vengono lette solo all'avvio:
+
+```bash
+sudo service anemometer-collector restart
+sudo service anemometer-collector status
+```
+
+Se il servizio non parte, la causa è nell'ultima riga di `/var/log/anemometer-collector/collector.log`, ad esempio una chiave più corta di 32 caratteri. Durante il riavvio, che dura pochi secondi, un messaggio in arrivo può andare perso.
+
+**5. Verifica**
+
+Il primo messaggio parte 5 minuti dopo l'avvio del nodo. Sul server deve comparire:
+
+```
+ricevuto nuovo_nodo: media ...
+```
+
+Su InfluxDB il nodo si distingue dal tag `sensor_name`. Se invece compare un altro messaggio, usa la tabella al [passo 8](#8-verifica).
 
 ## Struttura del repository
 
