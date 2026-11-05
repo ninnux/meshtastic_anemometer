@@ -496,6 +496,61 @@ static void testPayloadTooLong() {
   CHECK(formatWindPayload(buf, full + 1, "a", SAMPLE_REPORT));
 }
 
+static bool close(float a, float b) { return a > b - 0.001f && a < b + 0.001f; }
+
+static void testGustNeedsFullWindow() {
+  RollingGust g;
+  float rate = -1.0f;
+  CHECK(!g.add(5, 1.0f, rate));
+  CHECK(!g.add(5, 1.0f, rate));
+  CHECK(rate == -1.0f);
+  CHECK(g.add(5, 1.0f, rate));
+  CHECK(close(rate, 5.0f));
+}
+
+static void testGustSlides() {
+  RollingGust g;
+  float rate;
+  const uint32_t pulses[] = {0, 3, 9, 6, 0, 0};
+  const float expected[] = {0, 0, 4.0f, 6.0f, 5.0f, 2.0f};
+  for (int i = 0; i < 6; i++) {
+    bool full = g.add(pulses[i], 1.0f, rate);
+    CHECK(full == (i >= 2));
+    if (full) CHECK(close(rate, expected[i]));
+  }
+}
+
+// Una finestra allineata (0,3,9 e 6,0,0) darebbe 4 e 2: la raffica vera e' 6
+static void testGustNotSplitAcrossBlocks() {
+  RollingGust g;
+  float rate, best = 0.0f;
+  const uint32_t pulses[] = {0, 3, 9, 6, 0, 0};
+  for (uint32_t p : pulses) {
+    if (g.add(p, 1.0f, rate) && rate > best) best = rate;
+  }
+  CHECK(close(best, 6.0f));
+}
+
+// Un impulso spurio su 3 s pesa un terzo rispetto a un campione da 1 s
+static void testGustDampsSpuriousPulse() {
+  RollingGust g;
+  float rate;
+  g.add(10, 1.0f, rate);
+  g.add(10, 1.0f, rate);
+  CHECK(g.add(11, 1.0f, rate));
+  CHECK(close(rate, 31.0f / 3.0f));
+}
+
+// Un campione in ritardo non deve creare una falsa raffica
+static void testGustUsesMeasuredTime() {
+  RollingGust g;
+  float rate;
+  g.add(10, 1.0f, rate);
+  g.add(20, 2.0f, rate);
+  CHECK(g.add(10, 1.0f, rate));
+  CHECK(close(rate, 10.0f));
+}
+
 int main() {
   testColdBootConnectAndPost();
   testRunningModemNotPulsed();
@@ -526,6 +581,11 @@ int main() {
   testPayloadFormat();
   testPayloadWorstCaseFitsSketchBuffer();
   testPayloadTooLong();
+  testGustNeedsFullWindow();
+  testGustSlides();
+  testGustNotSplitAcrossBlocks();
+  testGustDampsSpuriousPulse();
+  testGustUsesMeasuredTime();
   printf(failures ? "%d test falliti\n" : "tutti i test superati\n", failures);
   return failures ? 1 : 0;
 }

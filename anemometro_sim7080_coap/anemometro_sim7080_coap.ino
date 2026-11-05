@@ -60,6 +60,10 @@ volatile uint16_t TimerCount            = 0;
 volatile uint32_t Rotations             = 0;
 volatile uint32_t ContactBounceTime     = 0;
 
+// Davis: V[mph] = P * 2.25 / T, con un impulso a giro; 0.868976 converte in nodi
+const float KnPerPulsePerSecond = 2.25f * 0.868976f;
+
+RollingGust gust;
 float WindSpeed         = 0.0f;
 float WindSpeedMean     = 0.0f;
 float WindSpeedMax      = 0.0f;
@@ -167,12 +171,17 @@ void loop() {
   float elapsedS = (sampleMs - LastSampleMs) / 1000.0f;
   LastSampleMs = sampleMs;
 
-  // Davis: V[mph] = P * 2.25 / T, con un impulso a giro; 0.868976 converte in nodi
-  WindSpeed = rot * 2.25f * 0.868976f / elapsedS;
+  WindSpeed = rot * KnPerPulsePerSecond / elapsedS;
   WindSpeedSum += WindSpeed * elapsedS;
   WindTimeSum  += elapsedS;
   WindSpeedMean = WindSpeedSum / WindTimeSum;
-  if (WindSpeed > WindSpeedMax) WindSpeedMax = WindSpeed;
+
+  // La massima e' la raffica su 3 s, non il picco del singolo campione
+  float gustPulsesPerSecond;
+  if (gust.add(rot, elapsedS, gustPulsesPerSecond)) {
+    float gustKn = gustPulsesPerSecond * KnPerPulsePerSecond;
+    if (gustKn > WindSpeedMax) WindSpeedMax = gustKn;
+  }
 
   float dirRad = radians(windCalDirection);
   WindDirSinSum += sinf(dirRad);

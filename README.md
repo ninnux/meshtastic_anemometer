@@ -100,7 +100,7 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 ### Versione SIM7080 + CoAP
 
-`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Velocità e direzione vengono lette ogni secondo. Ogni 5 minuti (`REPORT_PERIOD_S`) il firmware invia la media e la massima del periodo (nodi) e la media vettoriale della direzione (gradi), usando il client CoAP del modem (`AT+CCOAP*`). La massima è il valore più alto su un secondo. Lo stesso periodo vale per i valori `M` e `X` del BLE, che vengono azzerati a ogni invio.
+`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Velocità e direzione vengono lette ogni secondo. Ogni 5 minuti (`REPORT_PERIOD_S`) il firmware invia la media del periodo e la raffica massima (nodi) e la media vettoriale della direzione (gradi), usando il client CoAP del modem (`AT+CCOAP*`). La raffica è il valore più alto della media sugli ultimi 3 s, calcolata a finestra scorrevole ogni secondo. Lo stesso periodo vale per i valori `M` e `X` del BLE, che vengono azzerati a ogni invio.
 
 **Collegamenti:** `D6` (TX) → RX modem, `D7` (RX) ← TX modem, `D1` → PWRKEY (obbligatorio, serve a risvegliare il modem dal PSM), GND in comune, a 115200 baud. Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche lavorano a 1,8 V: se il modulo non ha un traslatore di livello, serve aggiungerlo.
 
@@ -114,7 +114,7 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 Il messaggio è di circa 100 byte con le intestazioni IP/UDP, quindi meno di 1 MB al mese escluso l'overhead dell'operatore.
 
-**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. La velocità segue la formula Davis `V[mph] = P × 2.25 / T` con un impulso a giro, cioè 1,96 kn per impulso al secondo. Il debounce di 40 ms (`DebounceMs`) permette di leggere fino a circa 48 kn. La massima su 1 s ha quindi passi di circa 2 kn, mentre la media su 5 minuti è molto più fine. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
+**Misura:** la velocità usa il tempo misurato tra due campioni e la media è pesata su quel tempo, così un campione in ritardo non crea false raffiche. La velocità segue la formula Davis `V[mph] = P × 2.25 / T` con un impulso a giro, cioè 1,96 kn per impulso al secondo. Il debounce di 40 ms (`DebounceMs`) permette di leggere fino a circa 48 kn. La raffica su 3 s ha passi di circa 0,65 kn, la media su 5 minuti meno di 0,01 kn. Il valore istantaneo `S` del BLE resta su 1 s, con passi di circa 2 kn. La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°: il potenziometro deve quindi essere alimentato dal 3V3 della XIAO.
 
 **Risparmio energetico (PSM):** il modem non si spegne: resta registrato in rete e dopo ogni invio torna a dormire con il Power Saving Mode (`AT+CPSMS`), con o senza vento.
 
