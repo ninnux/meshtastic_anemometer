@@ -37,6 +37,20 @@ Ogni sketch Arduino sta nella propria cartella con lo stesso nome del file `.ino
 
 ## Firmware
 
+### Compilazione
+
+Con **PlatformIO** (`platformio.ini` nella radice del repository, un ambiente per sketch):
+
+```bash
+pio run                        # firmware SIM7080 (ambiente predefinito)
+pio run -e bluetooth           # anemometro_bluetooth_stringaunica
+pio run -e compensated         # meshtastic_davis_anemometer_compensated, per XIAO Sense
+pio run -e sim7080 -t upload   # compila e carica
+pio device monitor             # monitor seriale a 115200 baud
+```
+
+Gli sketch restano compilabili anche con l'Arduino IDE. PlatformIO usa il BSP Seeed 1.1.1, l'Arduino IDE quello installato (a volte più recente).
+
 ### Hardware
 
 - **MCU:** Seeed XIAO nRF52840 (BSP "Seeed nRF52 Boards" ≥ 1.1.0)
