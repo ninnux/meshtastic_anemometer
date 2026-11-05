@@ -78,8 +78,8 @@ void Sim7080::sendCmd(const char* cmd) {
 // che contiene ERROR (false). Le altre righe, URC compresi, sono ignorate.
 bool Sim7080::waitLine(const char* ok, const char* fail, uint32_t timeoutMs) {
   _lineLen = 0;
-  uint32_t start = millis();
-  while (millis() - start < timeoutMs) {
+  uint32_t start = xTaskGetTickCount();
+  while (xTaskGetTickCount() - start < ms2tick(timeoutMs)) {
     if (!_at.available()) {
       delay(POLL_MS);  // cede la CPU al task di campionamento
       continue;
@@ -122,8 +122,8 @@ bool Sim7080::isAlive() {
 }
 
 bool Sim7080::waitAlive(uint32_t timeoutMs) {
-  uint32_t start = millis();
-  while (millis() - start < timeoutMs) {
+  uint32_t start = xTaskGetTickCount();
+  while (xTaskGetTickCount() - start < ms2tick(timeoutMs)) {
     if (isAlive()) return true;
     delay(500);
   }
@@ -182,8 +182,8 @@ bool Sim7080::configureApn(const char* apn) {
 }
 
 bool Sim7080::waitSimReady(uint32_t timeoutMs) {
-  uint32_t start = millis();
-  while (millis() - start < timeoutMs) {
+  uint32_t start = xTaskGetTickCount();
+  while (xTaskGetTickCount() - start < ms2tick(timeoutMs)) {
     if (query("AT+CPIN?", "+CPIN: READY")) return true;
     delay(500);
   }
@@ -191,8 +191,8 @@ bool Sim7080::waitSimReady(uint32_t timeoutMs) {
 }
 
 bool Sim7080::waitAttach(uint32_t timeoutMs) {
-  uint32_t start = millis();
-  while (millis() - start < timeoutMs) {
+  uint32_t start = xTaskGetTickCount();
+  while (xTaskGetTickCount() - start < ms2tick(timeoutMs)) {
     if (query("AT+CGATT?", "+CGATT: 1")) return true;
     delay(2000);
   }

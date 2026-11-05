@@ -12,6 +12,7 @@
 #include "wind_report.h"
 
 uint32_t fakeMillis = 0;
+uint32_t fakeTickOffset = 0;
 int pwrkeyPulses = 0;
 uint8_t pwrkeyLevel = LOW;
 FakeSerial Serial;
@@ -171,6 +172,7 @@ static const char* HOST = "192.0.2.1";
 
 static void reset(FakeModem& m) {
   fakeMillis = 0;
+  fakeTickOffset = 0;
   pwrkeyPulses = 0;
   pwrkeyLevel = LOW;
   activeModem = &m;
@@ -608,36 +610,38 @@ static void testParseModemClockRejects() {
   }
 }
 
+static const uint32_t HZ = WIND_CLOCK_TICK_HZ;
+
 static void testClockTimestamps() {
   WindClock c;
   CHECK(c.needsSync(0));
   CHECK(!c.usable(0));
-  c.sync(1000000, 50000);
-  CHECK(!c.needsSync(50000));
-  CHECK(c.usable(50000));
-  CHECK(c.timestamp(50000) == 1000000);
-  CHECK(c.timestamp(350000) == 1000300);       // 5 minuti dopo
+  c.sync(1000000, 50 * HZ);
+  CHECK(!c.needsSync(50 * HZ));
+  CHECK(c.usable(50 * HZ));
+  CHECK(c.timestamp(50 * HZ) == 1000000);
+  CHECK(c.timestamp(350 * HZ) == 1000300);       // 5 minuti dopo
 }
 
 // Il report si chiude prima che il modem si connetta e sincronizzi
 static void testClockBeforeSync() {
   WindClock c;
-  c.sync(1000000, 400000);
-  CHECK(c.timestamp(100000) == 999700);
+  c.sync(1000000, 400 * HZ);
+  CHECK(c.timestamp(100 * HZ) == 999700);
 }
 
 static void testClockAlwaysGrows() {
   WindClock c;
   c.sync(1000000, 0);
-  CHECK(c.timestamp(10000) == 1000010);
-  c.sync(1000000, 10000);                       // l'ora arretra di 10 s
-  CHECK(c.timestamp(10000) == 1000011);
-  CHECK(c.timestamp(10000) == 1000012);
-  CHECK(c.timestamp(5000000) == 1004990);
+  CHECK(c.timestamp(10 * HZ) == 1000010);
+  c.sync(1000000, 10 * HZ);                      // l'ora arretra di 10 s
+  CHECK(c.timestamp(10 * HZ) == 1000011);
+  CHECK(c.timestamp(10 * HZ) == 1000012);
+  CHECK(c.timestamp(5000 * HZ) == 1004990);
 }
 
 static void testClockResyncAndExpiry() {
-  const uint32_t HOUR = 3600UL * 1000UL;
+  const uint32_t HOUR = 3600UL * HZ;
   WindClock c;
   c.sync(1000000, 1000);
   CHECK(!c.needsSync(1000 + 24 * HOUR - 1));
@@ -646,13 +650,51 @@ static void testClockResyncAndExpiry() {
   CHECK(!c.usable(1000 + 7 * 24 * HOUR));
 }
 
-// millis() riparte da zero dopo circa 49 giorni
-static void testClockMillisWrap() {
+// I tick ripartono da zero dopo 48,5 giorni: nessun salto, nemmeno a cavallo
+static void testClockTickWrap() {
   WindClock c;
-  uint32_t syncMs = 0xFFFFF000;
-  c.sync(1000000, syncMs);
-  CHECK(!c.needsSync(syncMs + 10000));
-  CHECK(c.timestamp(syncMs + 10000) == 1000010);
+  uint32_t beforeWrap = 0xFFFFFFFFUL - 10 * HZ;       // 10 s prima del passaggio
+  c.sync(1000000, beforeWrap);
+  // Subito dopo la sincronizzazione, con il passaggio ancora da venire
+  CHECK(!c.needsSync(beforeWrap + 5 * HZ));
+  CHECK(c.usable(beforeWrap + 5 * HZ));
+  uint32_t afterWrap = beforeWrap + 40 * HZ;          // 30 s dopo il passaggio
+  CHECK(afterWrap < beforeWrap);
+  CHECK(!c.needsSync(afterWrap));
+  CHECK(c.usable(afterWrap));
+  CHECK(c.timestamp(afterWrap) == 1000040);
+
+  // Report chiuso prima del passaggio, sincronizzazione dopo
+  WindClock d;
+  d.sync(2000000, afterWrap);
+  CHECK(d.timestamp(beforeWrap) == 1999960);
+}
+
+// Riproduce il millis() della scheda: con le differenze in millisecondi il salto vale 28 ore,
+// ed e' il motivo per cui il firmware usa i tick
+static void testBoardMillisWouldJump() {
+  const uint64_t ticksPerWrap = 1ULL << 32;
+  uint32_t lastMs = (uint32_t)((ticksPerWrap - 1) * 1000 / HZ);
+  uint32_t firstMs = 0;
+  CHECK(lastMs == 4194303999UL);
+  CHECK(firstMs - lastMs == 100663297UL);
+  uint32_t lastTick = (uint32_t)(ticksPerWrap - 1), firstTick = 0;
+  CHECK(firstTick - lastTick == 1);
+}
+
+// Un'attesa di risposta a cavallo del passaggio deve durare quanto previsto
+static void testTimeoutAcrossTickWrap() {
+  FakeModem m; reset(m);
+  // Il passaggio arriva dopo 5 s, durante l'attesa di 20 s che segue l'impulso su PWRKEY
+  fakeTickOffset = 0xFFFFFFFFUL - ms2tick(5000);
+  Sim7080 modem(m, 1, HIGH);
+  uint32_t start = fakeMillis;
+  m.powered = false;  // nessuna risposta
+  m.bootAt = 0xFFFFFFFF;
+  activeModem = nullptr;
+  CHECK(!modem.connect(APN, HOST, 5683));
+  uint32_t waited = fakeMillis - start;
+  CHECK(waited >= 20000 && waited < 30000);  // il timeout di avvio di 20 s, non zero
 }
 
 static void testSyncTime() {
@@ -776,7 +818,9 @@ int main() {
   testClockBeforeSync();
   testClockAlwaysGrows();
   testClockResyncAndExpiry();
-  testClockMillisWrap();
+  testClockTickWrap();
+  testBoardMillisWouldJump();
+  testTimeoutAcrossTickWrap();
   testSyncTime();
   testSyncTimeNtpError();
   testSyncTimeBadClock();

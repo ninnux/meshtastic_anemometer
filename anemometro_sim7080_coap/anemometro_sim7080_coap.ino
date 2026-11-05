@@ -72,7 +72,7 @@ float WindSpeedMean     = 0.0f;
 float WindSpeedMax      = 0.0f;
 float WindSpeedSum      = 0.0f;
 float WindTimeSum       = 0.0f;
-uint32_t LastSampleMs   = 0;
+uint32_t LastSampleTick = 0;
 float WindDirSinSum     = 0.0f;
 float WindDirCosSum     = 0.0f;
 int   vaneValue         = 0;
@@ -116,7 +116,7 @@ void setup() {
 
   pinMode(WindSensorPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(WindSensorPin), isr_rotation, FALLING);
-  LastSampleMs = millis();
+  LastSampleTick = xTaskGetTickCount();
 
   // Il default e' 0-3.6 V: con la banderuola a 3.3 V la lettura si fermerebbe
   // attorno a 330°. Con VDD come riferimento non dipende dalla tensione.
@@ -165,16 +165,17 @@ void loop() {
   // ── Calcolo vento ─────────────────────────────────────────
   getWindDirection();
 
-  uint32_t sampleMs = millis();
+  uint32_t sampleTick = xTaskGetTickCount();
   noInterrupts();
   uint32_t rot = Rotations;
   Rotations = 0;
   interrupts();
 
   // Si usa il tempo misurato: un campione in ritardo conterrebbe piu' rotazioni
-  // e, diviso per 1 s fisso, risulterebbe una falsa raffica.
-  float elapsedS = (sampleMs - LastSampleMs) / 1000.0f;
-  LastSampleMs = sampleMs;
+  // e, diviso per 1 s fisso, risulterebbe una falsa raffica. Tick e non millis():
+  // vedi wind_clock.h, un salto di millis() rovinerebbe la media del periodo.
+  float elapsedS = (float)(sampleTick - LastSampleTick) / WIND_CLOCK_TICK_HZ;
+  LastSampleTick = sampleTick;
 
   WindSpeed = rot * KnPerPulsePerSecond / elapsedS;
   WindSpeedSum += WindSpeed * elapsedS;
@@ -224,7 +225,7 @@ void loop() {
 // Report – Prepara i valori del periodo per il task del modem
 // ============================================================
 void queueReport() {
-  WindReport report = { WindSpeedMean, WindSpeedMax, meanWindDirection(), millis() };
+  WindReport report = { WindSpeedMean, WindSpeedMax, meanWindDirection(), xTaskGetTickCount() };
   xQueueOverwrite(reportQueue, &report);
 }
 
@@ -271,7 +272,7 @@ bool sendReport(const WindReport& report) {
 
   char payload[128];
   if (!formatSignedWindPayload(payload, sizeof(payload), NODE_NAME, report,
-                               windClock.timestamp(report.closedMs), STATION_KEY)) {
+                               windClock.timestamp(report.closedTick), STATION_KEY)) {
     Serial.println("Report troppo lungo");
     return false;
   }
@@ -286,15 +287,15 @@ bool sendReport(const WindReport& report) {
 // Il campo n del messaggio e' l'ora di misura: senza un'ora valida il server lo scarterebbe.
 // Se la sincronizzazione fallisce ma l'ora e' ancora buona, si invia comunque.
 bool syncClockIfNeeded() {
-  if (!windClock.needsSync(millis())) return true;
+  if (!windClock.needsSync(xTaskGetTickCount())) return true;
 
   uint32_t unixSeconds;
   if (modem.syncTime(NTP_SERVER, unixSeconds)) {
-    windClock.sync(unixSeconds, millis());
+    windClock.sync(unixSeconds, xTaskGetTickCount());
     return true;
   }
   Serial.println("Sincronizzazione NTP fallita");
-  return windClock.usable(millis());
+  return windClock.usable(xTaskGetTickCount());
 }
 
 // ============================================================

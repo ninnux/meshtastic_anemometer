@@ -13,7 +13,11 @@
 extern uint32_t fakeMillis;
 extern int pwrkeyPulses;
 extern uint8_t pwrkeyLevel;
+extern uint32_t fakeTickOffset;
 inline uint32_t millis() { return fakeMillis; }
+#define WIND_FAKE_TICK_HZ 1024
+inline uint32_t xTaskGetTickCount() { return (uint32_t)((uint64_t)fakeMillis * WIND_FAKE_TICK_HZ / 1000) + fakeTickOffset; }
+inline uint32_t ms2tick(uint32_t ms) { return (uint32_t)((uint64_t)ms * WIND_FAKE_TICK_HZ / 1000); }
 void delay(uint32_t ms);
 inline void pinMode(int, int) {}
 void digitalWrite(int, int level);

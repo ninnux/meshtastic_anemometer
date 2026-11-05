@@ -16,7 +16,7 @@ struct WindReport {
   float    mean;
   float    max;
   int      dir;
-  uint32_t closedMs;  // millis() alla chiusura del periodo
+  uint32_t closedTick;  // tick di FreeRTOS alla chiusura del periodo
 };
 
 // Impulsi al secondo sugli ultimi 3 campioni, a finestra scorrevole: nessuna

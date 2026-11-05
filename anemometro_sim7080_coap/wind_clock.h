@@ -1,5 +1,5 @@
 // ============================================================
-// wind_clock.h – Ora Unix ricavata dalla rete e mantenuta con millis().
+// wind_clock.h – Ora Unix ricavata dalla rete e mantenuta con i tick di FreeRTOS.
 // Nessuna dipendenza da Arduino.
 // ============================================================
 #pragma once
@@ -37,40 +37,45 @@ inline bool parseModemClock(const char* text, uint32_t& unixSeconds) {
   return true;
 }
 
+#define WIND_CLOCK_TICK_HZ 1024  // configTICK_RATE_HZ del BSP
+
+// Conta in tick e non con millis(): su questa scheda millis() vale tick * 1000 / 1024
+// troncato a 32 bit, quindi dopo 48,5 giorni salta da 4194303999 a 0 e una differenza a
+// cavallo risulta di 28 ore in piu'. I tick invece ripartono da zero in modo regolare.
 class WindClock {
 public:
-  void sync(uint32_t unixSeconds, uint32_t nowMs) {
+  void sync(uint32_t unixSeconds, uint32_t nowTicks) {
     _unixAtSync = unixSeconds;
-    _msAtSync = nowMs;
+    _ticksAtSync = nowTicks;
     _synced = true;
   }
 
   // Una sincronizzazione al giorno basta: il quarzo sbaglia di circa 2 s al giorno
-  bool needsSync(uint32_t nowMs) const {
-    return !_synced || nowMs - _msAtSync >= RESYNC_MS;
+  bool needsSync(uint32_t nowTicks) const {
+    return !_synced || nowTicks - _ticksAtSync >= RESYNC_TICKS;
   }
 
-  // Oltre questo limite l'ora non e' piu' affidabile, e nemmeno il calcolo di timestamp()
-  bool usable(uint32_t nowMs) const {
-    return _synced && nowMs - _msAtSync < MAX_AGE_MS;
+  // Oltre questo limite l'ora non e' piu' affidabile
+  bool usable(uint32_t nowTicks) const {
+    return _synced && nowTicks - _ticksAtSync < MAX_AGE_TICKS;
   }
 
   // Ora di un istante vicino alla sincronizzazione, anche precedente: il report si chiude
   // prima che il modem si connetta. Sempre crescente: il server scarta i valori gia' visti.
-  uint32_t timestamp(uint32_t ms) {
-    int32_t elapsedMs = (int32_t)(ms - _msAtSync);
-    uint32_t value = _unixAtSync + elapsedMs / 1000;
+  uint32_t timestamp(uint32_t ticks) {
+    int32_t elapsedTicks = (int32_t)(ticks - _ticksAtSync);
+    uint32_t value = _unixAtSync + elapsedTicks / WIND_CLOCK_TICK_HZ;
     if (value <= _last) value = _last + 1;
     _last = value;
     return value;
   }
 
 private:
-  static const uint32_t RESYNC_MS  = 24UL * 3600UL * 1000UL;
-  static const uint32_t MAX_AGE_MS = 7UL * 24UL * 3600UL * 1000UL;
+  static const uint32_t RESYNC_TICKS  = 24UL * 3600UL * WIND_CLOCK_TICK_HZ;
+  static const uint32_t MAX_AGE_TICKS = 7UL * 24UL * 3600UL * WIND_CLOCK_TICK_HZ;
 
-  uint32_t _unixAtSync = 0;
-  uint32_t _msAtSync   = 0;
-  uint32_t _last       = 0;
-  bool     _synced     = false;
+  uint32_t _unixAtSync  = 0;
+  uint32_t _ticksAtSync = 0;
+  uint32_t _last        = 0;
+  bool     _synced      = false;
 };
