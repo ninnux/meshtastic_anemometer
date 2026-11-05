@@ -443,7 +443,32 @@ Se su macOS non trova gli header C++, aggiungi `-isysroot $(xcrun --show-sdk-pat
 
 #### Da verificare sull'hardware
 
-Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Manual V1.05*, capitolo 18 per il CoAP, che non è incluso nel repository. Il manuale lascia aperti questi punti:
+**Da controllare per primi**, perché senza questi due comandi la stazione non invia nulla:
+
+| Controllo | Cosa deve succedere | Cosa vedi sul monitor seriale se fallisce |
+|---|---|---|
+| **Ora di rete** (`AT+CNTP`) | il modem ottiene l'ora via NTP con la tua SIM | `Sincronizzazione NTP fallita` |
+| **Invio CoAP** (`AT+CCOAPPARA`) | il modem accetta il pacchetto e lo invia | `CoAP non inviato: {...}` |
+
+Il firmware non stampa le risposte AT: `CoAP non inviato` compare anche per altri errori di invio. Per vedere l'`ERROR`, prova i comandi a mano con un terminale collegato alla UART del modem, attraverso un adattatore USB-seriale con il livello logico giusto e con la XIAO scollegata:
+
+```
+AT+CGATT?                                  deve rispondere +CGATT: 1
+AT+CNCFG=0,1,"iot.1nce.net"                con l'APN della tua SIM
+AT+CNACT=0,1                               attendi +APP PDP: 0,ACTIVE
+AT+CNTP="pool.ntp.org",0,0,0
+AT+CNTP                                    attendi +CNTP: 1 (61-65 sono errori)
+AT+CCLK?                                   deve riportare l'ora UTC corrente
+AT+CCOAPINIT
+AT+CCOAPURL="coap://indirizzo_del_server:5683"
+AT+CCOAPPARA="CODE",2,"TYPE","NON","MID",1,"URI-PATH",0,"wind","CONTENT-FORMAT",50,"PAYLOAD",1,"7b7d"
+AT+CCOAPACTION                             deve rispondere +CCOAPACTION: 0,1
+AT+CCOAPTERM
+```
+
+Il payload `7b7d` è un JSON vuoto, quindi il ricevitore lo scarta. Se nel suo log compare `scartato da ...: firma mancante`, l'invio funziona. Se `AT+CCOAPPARA` dà `ERROR`, prova prima i nomi dei parametri senza virgolette, come nell'esempio del manuale, e poi aggiorna `coapPost` in `sim7080.cpp`.
+
+Gli altri punti da verificare, compresi questi due. Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Manual V1.05*, capitolo 18 per il CoAP, che non è incluso nel repository. Il manuale lascia aperti questi punti:
 
 1. **`AT+CCOAPPARA`:** il manuale mostra solo un esempio minimale. `"CODE",2` per il POST, i nomi dei parametri tra virgolette e il payload in esadecimale sono deduzioni. Se dà `ERROR`, parti da qui.
 2. **PSM concesso:** controlla la riga `+CPSMRDP:` nel log. Dipende dall'operatore.
