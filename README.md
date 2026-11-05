@@ -30,6 +30,130 @@ Con il firmware SIM7080 il percorso via LoRa è sostituito da:
  └─────────────────────┘                └──────────┘
 ```
 
+## Installazione
+
+Questa guida installa il firmware SIM7080 e il ricevitore in Go su un server Devuan. I dettagli sono nelle sezioni [Versione SIM7080 + CoAP](#versione-sim7080--coap) e [Ricevitore in Go e deploy su Devuan](#ricevitore-in-go-e-deploy-su-devuan).
+
+> Il firmware non è ancora stato provato su un modem e un anemometro veri: al primo avvio segui anche [Da verificare sull'hardware](#da-verificare-sullhardware).
+
+**Cosa serve:**
+
+- sul computer: [PlatformIO](https://platformio.org/) (oppure l'Arduino IDE), Go 1.22 o più recente, `openssl` e un client SSH;
+- sul server: Devuan con accesso SSH come root o con `sudo`, un'istanza InfluxDB v2 con il suo token e la porta UDP 5683 raggiungibile da Internet;
+- per la stazione: XIAO nRF52840, modem SIM7080G con SIM Cat-M o NB-IoT, anemometro Davis.
+
+### 1. Scarica il codice
+
+```bash
+git clone -b sim7080 git@github.com:ninnux/meshtastic_anemometer.git
+cd meshtastic_anemometer
+```
+
+### 2. Genera la chiave della stazione
+
+**Ogni stazione ha una chiave propria.** Generane una nuova per ognuna e conservala: serve sia alla stazione sia al server.
+
+```bash
+openssl rand -hex 32
+cp anemometro_sim7080_coap/secrets.example.h anemometro_sim7080_coap/secrets.h
+```
+
+In `anemometro_sim7080_coap/secrets.h` cancella la riga `#error` e incolla la chiave:
+
+```cpp
+#define STATION_KEY "la_chiave_generata"
+```
+
+Il file è escluso da git: non committarlo e non condividerlo.
+
+### 3. Configura lo sketch
+
+In testa ad `anemometro_sim7080_coap/anemometro_sim7080_coap.ino` imposta almeno:
+
+| Define | Cosa inserire |
+|---|---|
+| `NODE_NAME` | Nome **univoco** della stazione: lettere, numeri, `_` e `-`, massimo 32 caratteri |
+| `COAP_SERVER_IP` | Indirizzo del server. Il valore predefinito è un segnaposto |
+| `MODEM_APN` | APN della SIM |
+| `MODEM_PWRKEY_ACTIVE` | `HIGH` o `LOW`, secondo la scheda del modem |
+
+### 4. Collega l'hardware
+
+Segui la tabella in [Collegamenti](#collegamenti). Prima di dare corrente controlla l'alimentazione separata del modem e il livello logico delle sue linee.
+
+### 5. Compila e carica il firmware
+
+```bash
+pio run -e sim7080 -t upload
+```
+
+### 6. Installa il ricevitore sul server
+
+```bash
+cd server
+deploy/deploy.sh utente@server        # aggiungi -a arm64 o -a armv7 se il server non è amd64
+```
+
+### 7. Configura il ricevitore
+
+Sul server, in `/etc/default/anemometer-collector`:
+
+```sh
+INFLUX_URL="http://indirizzo-influxdb:8086"
+INFLUX_TOKEN="il_token"
+INFLUX_ORG="meteo_org"
+INFLUX_BUCKET="anemometri"
+STATION_KEYS="first_anemometer:la_chiave_generata"
+```
+
+Il nome prima dei due punti deve essere **identico** a `NODE_NAME`, e la chiave identica a quella in `secrets.h`. Poi riavvia:
+
+```bash
+sudo service anemometer-collector restart
+```
+
+Apri la porta UDP 5683 sul firewall del server: lo script di deploy non lo tocca.
+
+### 8. Verifica
+
+Il primo messaggio parte 5 minuti dopo l'avvio della stazione.
+
+```bash
+pio device monitor                                                # sulla stazione
+sudo tail -f /var/log/anemometer-collector/collector.log          # sul server
+```
+
+| Dove | Messaggio | Significato |
+|---|---|---|
+| stazione | `SIM7080: connesso`, poi `CoAP inviato: {...}` | invio riuscito |
+| server | `ricevuto first_anemometer: media ...` | messaggio accettato e passato a InfluxDB |
+| server | `firma errata` | la chiave è diversa tra stazione e server |
+| server | `stazione "..." sconosciuta` | il nome non è in `STATION_KEYS`, o è diverso da `NODE_NAME` |
+| server | `contatore ... già visto` | il contatore è ripartito: vedi [Autenticazione](#autenticazione) |
+
+Se sul server non compare nulla, controlla prima `COAP_SERVER_IP` e il firewall.
+
+### Più stazioni e gestione delle chiavi
+
+Ogni stazione ha nome, chiave e contatore propri. Il server sceglie la chiave in base al campo `id` del messaggio. Se una stazione viene compromessa, le altre restano protette: la sua chiave non permette di scrivere a nome di un'altra.
+
+Non usare la stessa chiave o lo stesso nome su due stazioni. Con la stessa chiave ne basterebbe una compromessa per falsificarle tutte. Con lo stesso nome condividerebbero il contatore, e i messaggi di una verrebbero scartati come già visti.
+
+**Aggiungere una stazione:**
+
+1. Ripeti i passi 2-5 con una chiave nuova e un `NODE_NAME` diverso. `secrets.h` è unico nella cartella, quindi va aggiornato prima di ogni compilazione.
+2. Aggiungi la coppia sul server, separata da una virgola, e riavvia il servizio:
+
+   ```sh
+   STATION_KEYS="first_anemometer:chiave_uno,seconda_stazione:chiave_due"
+   ```
+
+Il riavvio non azzera i contatori delle altre stazioni.
+
+**Sostituire una chiave:** per esempio se la stazione è stata rubata. Generane una nuova, aggiornala in `secrets.h` e in `STATION_KEYS`, ricarica il firmware e riavvia il servizio. Fino al caricamento, i messaggi della stazione vengono rifiutati.
+
+**Rimuovere una stazione:** togli la sua coppia da `STATION_KEYS` e riavvia il servizio. Da quel momento i suoi messaggi vengono rifiutati.
+
 ## Struttura del repository
 
 | Percorso | Descrizione |
@@ -144,17 +268,7 @@ Ogni messaggio è firmato con **HMAC-SHA256**, troncato a 128 bit, e ogni stazio
 - **Il contatore:** `n` è composto da un'epoca nei 16 bit alti e da una sequenza nei 16 bit bassi. L'epoca cresce a ogni avvio ed è salvata in flash (`/message_epoch.bin`) una sola volta per avvio, così la flash non si consuma a ogni invio.
 - **Sul server:** l'ultimo contatore di ogni stazione è salvato in `STATE_FILE`, così i vecchi messaggi restano scartati anche dopo un riavvio. Se il file è illeggibile il ricevitore non parte.
 
-Per configurare una stazione:
-
-```bash
-openssl rand -hex 32                                    # genera la chiave
-cp anemometro_sim7080_coap/secrets.example.h anemometro_sim7080_coap/secrets.h
-```
-
-1. In `secrets.h` metti la chiave in `STATION_KEY` e cancella la riga `#error`. Il file è escluso da git: **non committarlo**.
-2. Sul server metti in `STATION_KEYS` la coppia `NODE_NAME:chiave`, ad esempio `STATION_KEYS="first_anemometer:la_chiave,seconda_stazione:altra_chiave"`.
-
-Senza `secrets.h` lo sketch non compila. Senza chiavi sul server ogni messaggio viene rifiutato.
+Per generare le chiavi e aggiungere stazioni vedi [Installazione](#installazione). Senza `secrets.h` lo sketch non compila. Senza chiavi sul server ogni messaggio viene rifiutato.
 
 **Se la flash della XIAO viene cancellata:** il contatore riparte da capo e il server scarta tutti i messaggi come già visti, con `contatore ... già visto` nel log. Per ripartire, ferma il ricevitore, togli la stazione da `STATE_FILE` (oppure cancella il file, se la stazione è una sola) e riavvialo. Un normale caricamento del firmware non dovrebbe cancellare il contatore, ma va verificato sulla scheda. Chi ha accesso fisico alla stazione può leggerne la chiave: in quel caso sostituiscila.
 

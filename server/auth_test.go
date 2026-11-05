@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,6 +81,37 @@ func TestRejectedMessageDoesNotAdvanceCounter(t *testing.T) {
 	}
 	if _, err := a.Verify([]byte(signedPayload(testKey, 1))); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func signedBy(name, key string, counter int) []byte {
+	prefix := fmt.Sprintf(`{"id":"%s","mean":1,"max":2,"dir":3,"n":%d`, name, counter)
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(prefix))
+	return []byte(prefix + `,"sig":"` + hex.EncodeToString(mac.Sum(nil)[:signatureBytes]) + `"}`)
+}
+
+// Ogni nodo ha la sua chiave e il suo contatore
+func TestStationsAreIndependent(t *testing.T) {
+	keyA, keyB := strings.Repeat("a", minKeyLength), strings.Repeat("b", minKeyLength)
+	a, err := NewAuth(map[string][]byte{"nodo_a": []byte(keyA), "nodo_b": []byte(keyB)}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.Verify(signedBy("nodo_a", keyA, 1000)); err != nil {
+		t.Fatal(err)
+	}
+	// Il contatore alto di un nodo non blocca l'altro
+	if _, err := a.Verify(signedBy("nodo_b", keyB, 1)); err != nil {
+		t.Fatal(err)
+	}
+	// Chi possiede la chiave di un nodo non può scrivere a nome dell'altro
+	if _, err := a.Verify(signedBy("nodo_b", keyA, 2)); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("chiave di nodo_a accettata per nodo_b: %v", err)
+	}
+	// Un nodo non presente in STATION_KEYS viene rifiutato
+	if _, err := a.Verify(signedBy("nodo_c", keyA, 1)); !errors.Is(err, errUnauthorized) {
+		t.Fatalf("nodo sconosciuto accettato: %v", err)
 	}
 }
 
