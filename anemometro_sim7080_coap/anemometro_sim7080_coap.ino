@@ -1,0 +1,389 @@
+// ============================================================
+// anemometro_sim7080_coap.ino
+// Board: Seeed XIAO nRF52840
+// BSP:   Seeed nRF52 Boards >= 1.1.0
+// Modem: SIMCom SIM7080G (Cat-M / NB-IoT)
+// ============================================================
+
+#include <Arduino.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
+#include <bluefruit.h>
+#include <math.h>
+#include "coap.h"
+#include "sim7080.h"
+
+// ── Pin ──────────────────────────────────────────────────────
+#define WindSensorPin  2
+#define WindVanePin    A3
+#define VaneOffset     0
+
+// ── Modem (Serial1: RX=D7, TX=D6) ────────────────────────────
+#define MODEM_BAUD_RATE     115200
+#define MODEM_PWRKEY_PIN    1     // -1 se la scheda accende il modem da sola
+#define MODEM_PWRKEY_ACTIVE HIGH  // HIGH con transistor sulla scheda, LOW se diretto
+#define MODEM_APN           "internet"
+
+// ── CoAP ─────────────────────────────────────────────────────
+#define COAP_SERVER_IP   "192.0.2.1"  // IPv4 del server con collector_coap.py
+#define COAP_SERVER_PORT 5683
+#define NODE_NAME        "first_anemometer"
+#define COAP_PATH        "wind/" NODE_NAME
+
+// ── Gestione connessione ─────────────────────────────────────
+#define LINK_CHECK_EVERY       6       // report tra due controlli della PDP (1 min)
+#define CONNECT_RETRY_MS       30000UL
+#define CONNECT_FAILS_TO_RESET 3
+#define MODEM_OFF_WAIT_MS      5000UL
+
+// ── BLE ──────────────────────────────────────────────────────
+BLEService        windService("A0010000-0001-0001-0001-000000000001");
+BLECharacteristic bleWindData("A0010000-0001-0001-0001-000000000002",
+                               CHR_PROPS_READ | CHR_PROPS_NOTIFY, 32);
+
+// ── Advertising periodico ────────────────────────────────────
+#define ADV_WINDOW_MS   10000UL
+#define ADV_PERIOD_MS  30000UL
+
+uint32_t lastAdvStart  = 0;
+bool     isAdvertising = false;
+
+// ── SoftwareTimer ────────────────────────────────────────────
+SoftwareTimer sampleTimer;
+
+// ── Variabili anemometro ─────────────────────────────────────
+volatile bool     IsReportRequired      = false;
+volatile bool     IsBLEUpdateRequired   = false;
+volatile uint8_t  TimerCount            = 0;
+volatile uint32_t Rotations             = 0;
+volatile uint32_t ContactBounceTime     = 0;
+
+float WindSpeed         = 0.0f;
+float WindSpeedMean     = 0.0f;
+float WindSpeedMax      = 0.0f;
+float WindSpeedSum      = 0.0f;
+int   WindSpeedDiv      = 0;
+float WindDirSinSum     = 0.0f;
+float WindDirCosSum     = 0.0f;
+int   vaneValue         = 0;
+int   windDirection     = 0;
+int   windCalDirection  = 0;
+char  windCompassDirection[4] = "N";
+
+// ── Passaggio dati al task del modem ─────────────────────────
+struct WindReport {
+  float mean;
+  float max;
+  int   dir;
+};
+
+SemaphoreHandle_t sampleSemaphore;
+QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vince l'ultimo
+
+Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
+
+// ── Prototipi ────────────────────────────────────────────────
+void isr_timer_cb(TimerHandle_t xTimerID);
+void isr_rotation();
+void getWindDirection();
+int  meanWindDirection();
+void queueReport();
+void modemLoop();
+void sendReport(const WindReport& report);
+void setupBLE();
+void updateBLE();
+void startAdvertising();
+void stopAdvertising();
+
+// ============================================================
+// SETUP
+// ============================================================
+void setup() {
+  Bluefruit.autoConnLed(false);
+  Bluefruit.setConnLedInterval(0);
+
+  Serial.begin(115200);
+  uint32_t t = millis();
+  while (!Serial && (millis() - t) < 3000);
+
+  Serial1.begin(MODEM_BAUD_RATE);
+  modem.begin();
+
+  pinMode(WindSensorPin, INPUT);
+  attachInterrupt(digitalPinToInterrupt(WindSensorPin), isr_rotation, FALLING);
+
+  setupBLE();
+
+  lastAdvStart = millis() - ADV_PERIOD_MS;
+
+  sampleSemaphore = xSemaphoreCreateBinary();
+  reportQueue     = xQueueCreate(1, sizeof(WindReport));
+
+  // I comandi AT bloccano per secondi o minuti: stanno in un task separato,
+  // cosi' il campionamento non si ferma e le rotazioni accumulate durante
+  // un invio non diventano una falsa raffica nel campione successivo.
+  Scheduler.startLoop(modemLoop);
+
+  sampleTimer.begin(500, isr_timer_cb);
+  sampleTimer.start();
+
+  Serial.println("Sistema avviato.");
+}
+
+// ============================================================
+// LOOP – Campionamento
+// ============================================================
+void loop() {
+  uint32_t now = millis();
+
+  // ── Gestione advertising periodico ───────────────────────
+  if (!Bluefruit.connected()) {
+    if (!isAdvertising && (now - lastAdvStart >= ADV_PERIOD_MS)) {
+      lastAdvStart = now;
+      startAdvertising();
+    }
+    if (isAdvertising && (now - lastAdvStart >= ADV_WINDOW_MS)) {
+      stopAdvertising();
+    }
+  }
+
+  // ── Sleep ─────────────────────────────────────────────────
+  // In attesa il task e' sospeso e FreeRTOS mette in sleep la CPU
+  // quando anche il task del modem e' fermo.
+  xSemaphoreTake(sampleSemaphore, portMAX_DELAY);
+
+  // ── Calcolo vento ─────────────────────────────────────────
+  getWindDirection();
+
+  noInterrupts();
+  float rot = (float) Rotations/ 3.0f;
+  Rotations = 0;
+  interrupts();
+
+  WindSpeed = rot * 0.9f * 3.0f * 0.868976f;
+  WindSpeedDiv++;
+  WindSpeedSum += WindSpeed;
+  WindSpeedMean = WindSpeedSum / WindSpeedDiv;
+  if (WindSpeed > WindSpeedMax) WindSpeedMax = WindSpeed;
+
+  float dirRad = radians(windCalDirection);
+  WindDirSinSum += sinf(dirRad);
+  WindDirCosSum += cosf(dirRad);
+
+  Serial.print("WindSpeed (kn): ");  Serial.print(WindSpeed);
+  Serial.print(" Mean (kn): ");      Serial.print(WindSpeedMean);
+  Serial.print(" Max (kn): ");       Serial.print(WindSpeedMax);
+  Serial.print(" | Dir: ");          Serial.print(windCalDirection);
+  Serial.print("° (");               Serial.print(windCompassDirection);
+  Serial.println(")");
+
+  // ── Aggiorna BLE ──────────────────────────────────────────
+  if (IsBLEUpdateRequired) {
+    IsBLEUpdateRequired = false;
+    if (Bluefruit.connected()) {
+      updateBLE();
+    }
+  }
+
+  // ── Report ogni 10s ───────────────────────────────────────
+  if (IsReportRequired) {
+    IsReportRequired = false;
+    queueReport();
+    WindSpeedSum  = 0;
+    WindSpeedDiv  = 0;
+    WindSpeedMean = 0;
+    WindSpeedMax  = 0;
+    WindDirSinSum = 0;
+    WindDirCosSum = 0;
+  }
+}
+
+// ============================================================
+// Report – Prepara i valori del periodo per il task del modem
+// ============================================================
+void queueReport() {
+  WindReport report = { WindSpeedMean, WindSpeedMax, meanWindDirection() };
+  xQueueOverwrite(reportQueue, &report);
+}
+
+// Media vettoriale: la media aritmetica di 350° e 10° darebbe 180° invece di 0°
+int meanWindDirection() {
+  int dir = (int)lroundf(degrees(atan2f(WindDirSinSum, WindDirCosSum)));
+  return (dir + 360) % 360;
+}
+
+// ============================================================
+// Task modem – Connessione e invio
+// ============================================================
+void modemLoop() {
+  static uint8_t connectFails = 0;
+  static uint8_t reportCount  = 0;
+
+  if (!modem.connected()) {
+    if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT)) {
+      connectFails = 0;
+      xQueueReset(reportQueue);  // scarta il report rimasto in attesa durante la connessione
+    } else if (++connectFails >= CONNECT_FAILS_TO_RESET) {
+      connectFails = 0;
+      modem.togglePower();  // spegne il modem: il prossimo tentativo lo riaccende
+      delay(MODEM_OFF_WAIT_MS);
+      return;
+    } else {
+      delay(CONNECT_RETRY_MS);
+      return;
+    }
+  }
+
+  WindReport report;
+  if (xQueueReceive(reportQueue, &report, portMAX_DELAY) != pdTRUE) return;
+
+  sendReport(report);
+
+  if (++reportCount >= LINK_CHECK_EVERY) {
+    reportCount = 0;
+    if (modem.connected() && !modem.checkLink()) {
+      Serial.println("SIM7080: rete persa");
+    }
+  }
+}
+
+void sendReport(const WindReport& report) {
+  // Parte da un valore variabile: dopo un riavvio il server non deve
+  // scambiare i nuovi messaggi per duplicati di quelli precedenti.
+  static uint16_t messageId = (uint16_t)millis();
+
+  char payload[48];
+  int payloadLen = snprintf(payload, sizeof(payload),
+                            "{\"mean\":%.1f,\"max\":%.1f,\"dir\":%d}",
+                            report.mean, report.max, report.dir);
+
+  uint8_t packet[96];
+  size_t packetLen = coapBuildNonPost(packet, sizeof(packet), messageId++,
+                                      COAP_PATH, COAP_CONTENT_FORMAT_JSON,
+                                      payload, payloadLen);
+  if (packetLen == 0) {
+    Serial.println("CoAP: pacchetto troppo grande");
+    return;
+  }
+
+  bool sent = modem.send(packet, packetLen);
+  Serial.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
+  Serial.println(payload);
+}
+
+// ============================================================
+// BLE – Setup
+// ============================================================
+void setupBLE() {
+  Bluefruit.begin();
+  Bluefruit.setTxPower(0);
+  Bluefruit.setName("WindSensor");
+
+  windService.begin();
+
+  bleWindData.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
+  bleWindData.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
+  bleWindData.setMaxLen(32);
+  bleWindData.begin();
+  bleWindData.write("S:0.0 M:0.0 X:0.0 D:0 N", 24);
+
+  Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
+  Bluefruit.Advertising.addTxPower();
+  Bluefruit.Advertising.addService(windService);
+  Bluefruit.ScanResponse.addName();
+  Bluefruit.Advertising.setInterval(160, 3200);
+  Bluefruit.Advertising.setFastTimeout(30);
+
+  Serial.println("BLE configurato, radio spento.");
+}
+
+// ============================================================
+// BLE – Avvia advertising
+// ============================================================
+void startAdvertising() {
+  if (!isAdvertising) {
+    Bluefruit.Advertising.start(0);
+    isAdvertising = true;
+    Serial.println("BLE advertising ON");
+  }
+}
+
+// ============================================================
+// BLE – Ferma advertising
+// ============================================================
+void stopAdvertising() {
+  if (isAdvertising && !Bluefruit.connected()) {
+    Bluefruit.Advertising.stop();
+    isAdvertising = false;
+    Serial.println("BLE advertising OFF");
+  }
+}
+
+// ============================================================
+// BLE – Aggiorna caratteristica con stringa leggibile
+// ============================================================
+void updateBLE() {
+  char buf[32];
+  snprintf(buf, sizeof(buf), "S:%.1f M:%.1f X:%.1f D:%d %s",
+           WindSpeed, WindSpeedMean, WindSpeedMax,
+           windCalDirection, windCompassDirection);
+
+  bleWindData.write(buf, strlen(buf));
+
+  if (Bluefruit.connected()) {
+    bleWindData.notify(buf, strlen(buf));
+  }
+}
+
+// ============================================================
+// Timer ogni 500 ms
+// ============================================================
+void isr_timer_cb(TimerHandle_t xTimerID) {
+  (void)xTimerID;
+  TimerCount++;
+
+  // report ogni 20 tick (10 s), impostato prima di risvegliare il loop
+  if (TimerCount >= 20) {
+    IsReportRequired = true;
+    TimerCount = 0;
+  }
+
+  // campione ogni 2 tick (1 s)
+  if (TimerCount % 2 == 0) {
+    IsBLEUpdateRequired = true;
+    xSemaphoreGive(sampleSemaphore);
+  }
+}
+
+// ============================================================
+// ISR – Rotazione anemometro
+// ============================================================
+void isr_rotation() {
+  uint32_t now = millis();
+  if ((now - ContactBounceTime) > 55) {
+    Rotations++;
+    ContactBounceTime = now;
+  }
+}
+
+// ============================================================
+// Direzione vento
+// ============================================================
+void getWindDirection() {
+  vaneValue        = analogRead(WindVanePin);
+  windDirection    = map(vaneValue, 0, 1023, 0, 360);
+  windCalDirection = windDirection + VaneOffset;
+
+  if (windCalDirection > 360) windCalDirection -= 360;
+  if (windCalDirection <   0) windCalDirection += 360;
+
+  if      (windCalDirection <  22) strncpy(windCompassDirection, "N",  4);
+  else if (windCalDirection <  67) strncpy(windCompassDirection, "NE", 4);
+  else if (windCalDirection < 112) strncpy(windCompassDirection, "E",  4);
+  else if (windCalDirection < 157) strncpy(windCompassDirection, "SE", 4);
+  else if (windCalDirection < 212) strncpy(windCompassDirection, "S",  4);
+  else if (windCalDirection < 247) strncpy(windCompassDirection, "SW", 4);
+  else if (windCalDirection < 292) strncpy(windCompassDirection, "W",  4);
+  else if (windCalDirection < 337) strncpy(windCompassDirection, "NW", 4);
+  else                             strncpy(windCompassDirection, "N",  4);
+}

@@ -26,6 +26,8 @@ Lato server, uno script Python riceve i messaggi Meshtastic e li salva su **Infl
 |---|---|
 | `anemometro_bluetooth_stringaunica/` | Firmware base: velocità + direzione dalla banderuola, invio Meshtastic + BLE. |
 | `meshtastic_davis_anemometer_compensated/` | Firmware per XIAO nRF52840 **Sense**: aggiunge bussola QMC5883L + IMU LSM6DS3 per compensare la direzione con l'orientamento del dispositivo (tilt-compensated heading). Sperimentale. |
+| `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP su rete cellulare ogni 10 s, BLE invariato. |
+| `collector_coap.py` | Ricevitore CoAP del firmware SIM7080: scrive su InfluxDB. |
 | `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, massima e direzione. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
 | `ai/` | Prototipo di previsione basato sui dati storici in InfluxDB (pensato per una futura "boa" con pannello solare) e alert Telegram. |
@@ -81,6 +83,41 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 - All'avvio scansiona il bus I²C e carica la calibrazione della bussola da LittleFS (`/compass_calib.bin`). Se non c'è, esegue una calibrazione di 30 s (ruotare il dispositivo su tutti gli assi) e la salva.
 - A ogni campione sveglia IMU e bussola, calcola roll/pitch dall'accelerometro, l'heading compensato in inclinazione, e lo somma all'angolo della banderuola, poi rimette i sensori in sleep.
 - **Attenzione:** al momento `setupCompass()` contiene `InternalFS.remove(CALIB_FILE)` (marcato "da rimuovere"), quindi la calibrazione viene rifatta a ogni avvio.
+
+### Versione SIM7080 + CoAP
+
+`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Ogni 10 s invia media e massima del periodo (nodi) e la direzione (media vettoriale dei campioni, in gradi).
+
+**Collegamenti:** `D6` (TX) → RX modem, `D7` (RX) ← TX modem, `D1` → PWRKEY, GND in comune, a 115200 baud. Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche lavorano a 1,8 V: se il modulo non ha un traslatore di livello, serve aggiungerlo.
+
+**Da configurare in testa allo sketch:** `MODEM_APN`, `COAP_SERVER_IP` (solo IPv4 numerico), `NODE_NAME`, `MODEM_PWRKEY_PIN`, `MODEM_PWRKEY_ACTIVE` (dipende dalla scheda del modem).
+
+**Messaggio:** CoAP POST non confermabile (NON) su `coap://<server>:5683/wind/<NODE_NAME>`, Content-Format `application/json`:
+
+```json
+{"mean":10.8,"max":15.1,"dir":225}
+```
+
+Il datagramma è di 64 byte, 92 con le intestazioni IP/UDP, quindi circa 24 MB al mese escluso l'eventuale overhead dell'operatore.
+
+**Funzionamento:**
+
+- I pacchetti CoAP sono codificati in `coap.h` e spediti come UDP con `AT+CAOPEN` / `AT+CASEND`, senza usare i comandi CoAP del modem.
+- Il modem gira in un task FreeRTOS separato, quindi i comandi AT non interrompono il campionamento.
+- Se il modem è occupato o la rete manca, i report vengono scartati: resta solo l'ultimo in coda e non c'è buffer per i periodi senza rete.
+- I messaggi NON non hanno conferma. La perdita della rete viene rilevata da un errore di `AT+CASEND` o dal controllo della PDP con `AT+CNACT?` ogni minuto; un server spento non viene rilevato.
+- Dopo 3 tentativi di connessione falliti il modem viene spento e riacceso con PWRKEY.
+
+**Ricevitore:**
+
+```bash
+pip install aiocoap influxdb-client
+INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
+```
+
+Scrive nella measurement `meteo` i campi `wind_mean`, `wind_max`, `direction_deg` con tag `sensor_name`; senza `INFLUX_URL` stampa soltanto i dati. Serve la porta UDP 5683 raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque conosca l'indirizzo può inviare dati.
+
+**Test sul computer** (codifica CoAP e driver con modem simulato): vedi il comando in testa a `anemometro_sim7080_coap/test/test_sim7080.cpp`.
 
 ## Web app BLE
 
