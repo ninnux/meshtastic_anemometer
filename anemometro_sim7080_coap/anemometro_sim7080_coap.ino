@@ -10,7 +10,6 @@
 #include <InternalFileSystem.h>
 #include <bluefruit.h>
 #include <math.h>
-#include "modem_power.h"
 #include "sim7080.h"
 
 // ── Pin ──────────────────────────────────────────────────────
@@ -32,18 +31,9 @@
 #define COAP_CONFIRMABLE false  // true: rileva anche un server spento, con piu' traffico
 #define COAP_CONTENT_FORMAT_JSON 50
 
-// ── Gestione connessione ─────────────────────────────────────
-#define LINK_CHECK_EVERY       6       // report tra due controlli della PDP (1 min)
-#define CONNECT_RETRY_MS       30000UL
-#define CONNECT_FAILS_TO_RESET 3       // errori prima di spegnere e riaccendere il modem
-#define MODEM_OFF_WAIT_MS      5000UL
-
-// ── Risparmio energetico ─────────────────────────────────────
-// Con vento il modem resta attivo per inviare ogni 10 s. Nella calma non viene
-// piu' usato: resta registrato in rete ed entra da solo in PSM (AT+CPSMS).
-#define WIND_ACTIVE_KN     3.0f              // sotto questa raffica c'e' calma
-#define CALM_STANDBY_MS    (10UL * 60000UL)  // calma prima di lasciare il modem in PSM
-#define HEARTBEAT_MS       (30UL * 60000UL)  // messaggio di presenza durante la calma
+// ── Gestione errori ──────────────────────────────────────────
+#define FAILS_TO_RESET     3                 // errori consecutivi prima dello spegnimento completo
+#define FAILURE_BACKOFF_MS (10UL * 60000UL)  // pausa dopo lo spegnimento, se manca la rete
 
 // ── BLE ──────────────────────────────────────────────────────
 BLEService        windService("A0010000-0001-0001-0001-000000000001");
@@ -90,8 +80,6 @@ SemaphoreHandle_t sampleSemaphore;
 QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vince l'ultimo
 
 Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
-ModemPowerPolicy modemPower(WIND_ACTIVE_KN, CALM_STANDBY_MS, HEARTBEAT_MS);
-bool modemSerialOn = false;
 
 // ── Prototipi ────────────────────────────────────────────────
 void isr_timer_cb(TimerHandle_t xTimerID);
@@ -101,8 +89,6 @@ int  meanWindDirection();
 void queueReport();
 void modemLoop();
 bool sendReport(const WindReport& report);
-bool connectModem();
-void closeModemSerial();
 void setupBLE();
 void updateBLE();
 void startAdvertising();
@@ -120,7 +106,6 @@ void setup() {
   while (!Serial && (millis() - t) < 3000);
 
   modem.begin();
-  modemPower.begin(millis());
 
   pinMode(WindSensorPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(WindSensorPin), isr_rotation, FALLING);
@@ -198,7 +183,7 @@ void loop() {
     }
   }
 
-  // ── Report ogni 10s ───────────────────────────────────────
+  // ── Report ogni 60s ───────────────────────────────────────
   if (IsReportRequired) {
     IsReportRequired = false;
     queueReport();
@@ -228,64 +213,34 @@ int meanWindDirection() {
 // ============================================================
 // Task modem – Connessione e invio
 // ============================================================
+// A ogni report il modem viene svegliato, usato e lasciato tornare in PSM
 void modemLoop() {
-  static uint8_t failures    = 0;
-  static uint8_t reportCount = 0;
+  static uint8_t failures = 0;
 
   WindReport report;
   if (xQueueReceive(reportQueue, &report, portMAX_DELAY) != pdTRUE) return;
 
-  uint32_t now = millis();
-  modemPower.onReport(report.max, now);
+  Serial1.begin(MODEM_BAUD_RATE);
 
-  if (!modemPower.modemNeeded(now)) {
-    if (modemSerialOn) {
-      modem.standby();
-      closeModemSerial();
-    }
-    return;
+  bool sent = false;
+  if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT)) {
+    // Se la connessione e' stata lunga, intanto puo' essere pronto un report piu' recente
+    xQueueReceive(reportQueue, &report, 0);
+    sent = sendReport(report);
   }
 
-  // Dopo la connessione si riparte dal prossimo report: questo e' ormai vecchio
-  bool ready = modem.connected();
-  bool ok    = ready ? sendReport(report) : connectModem();
-
-  if (ok) {
-    if (ready) {
-      failures = 0;
-      modemPower.onHeartbeatDone(millis());
-    }
-  } else if (++failures >= CONNECT_FAILS_TO_RESET) {
+  if (sent) {
     failures = 0;
-    modemPower.onHeartbeatDone(millis());  // senza rete, riprova al prossimo turno
+  } else if (++failures >= FAILS_TO_RESET) {
+    failures = 0;
     modem.powerOff();
-    closeModemSerial();
-    delay(MODEM_OFF_WAIT_MS);
-    return;
-  } else {
-    delay(CONNECT_RETRY_MS);
+    Serial1.end();
+    delay(FAILURE_BACKOFF_MS);
     return;
   }
 
-  if (ready && ++reportCount >= LINK_CHECK_EVERY) {
-    reportCount = 0;
-    if (modem.connected() && !modem.checkLink()) {
-      Serial.println("SIM7080: rete persa");
-    }
-  }
-}
-
-bool connectModem() {
-  if (!modemSerialOn) {
-    Serial1.begin(MODEM_BAUD_RATE);
-    modemSerialOn = true;
-  }
-  return modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT);
-}
-
-void closeModemSerial() {
+  modem.standby();
   Serial1.end();  // la UART attiva impedisce alla CPU il sonno piu' profondo
-  modemSerialOn = false;
 }
 
 bool sendReport(const WindReport& report) {
@@ -376,8 +331,8 @@ void isr_timer_cb(TimerHandle_t xTimerID) {
   (void)xTimerID;
   TimerCount++;
 
-  // report ogni 20 tick (10 s), impostato prima di risvegliare il loop
-  if (TimerCount >= 20) {
+  // report ogni 120 tick (60 s), impostato prima di risvegliare il loop
+  if (TimerCount >= 120) {
     IsReportRequired = true;
     TimerCount = 0;
   }

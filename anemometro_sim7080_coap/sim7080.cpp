@@ -16,10 +16,10 @@
 
 // Valori richiesti alla rete, che puo' assegnarne altri (vedi AT+CPSMRDP).
 // Codifica in 3GPP TS 24.008: 3 bit di unita' + 5 bit di valore.
-// L'active time deve superare i 10 s tra due report, altrimenti il modem
-// si addormenterebbe mentre c'e' vento.
+// L'active time e' il minimo diverso da zero: tra due report passa solo un
+// minuto, e per il manuale un valore assegnato pari a 0 indica PSM non supportato.
 #define PSM_PERIODIC_TAU   "00100010"  // unita' 1 h x 2 = 2 ore
-#define PSM_ACTIVE_TIME    "00001111"  // unita' 2 s x 15 = 30 s
+#define PSM_ACTIVE_TIME    "00000001"  // unita' 2 s x 1 = 2 s
 
 Sim7080::Sim7080(Stream& at, uint8_t pwrkeyPin, uint8_t pwrkeyActive)
   : _at(at), _pwrkeyPin(pwrkeyPin), _pwrkeyActive(pwrkeyActive) {}
@@ -110,8 +110,12 @@ bool Sim7080::query(const char* cmd, const char* expected, uint32_t timeoutMs) {
 }
 
 // ── Accensione e spegnimento ─────────────────────────────────
+// Piu' tentativi: un impulso a un modem solo lento lo spegnerebbe
 bool Sim7080::isAlive() {
-  return command("AT", 500);
+  for (uint8_t i = 0; i < 3; i++) {
+    if (command("AT", 500)) return true;
+  }
+  return false;
 }
 
 bool Sim7080::waitAlive(uint32_t timeoutMs) {
@@ -275,6 +279,10 @@ bool Sim7080::coapPost(uint16_t messageId, const char* path, uint8_t contentForm
 
   bool sent = command(cmd);
   if (sent) {
+    // Indica alla rete che puo' rilasciare subito la connessione, cosi' il PSM
+    // arriva prima. Il manuale lo prevede solo per NB-IoT: l'esito non conta.
+    command(confirmable ? "AT+CRAI=2,0" : "AT+CRAI=1,0");
+
     sendCmd("AT+CCOAPACTION");
     sent = waitLine("+CCOAPACTION: 0,", "+CCOAPACTION:", ACTION_TIMEOUT_MS);
   }
@@ -285,10 +293,4 @@ bool Sim7080::coapPost(uint16_t messageId, const char* path, uint8_t contentForm
 
   if (!sent) _connected = false;
   return sent;
-}
-
-bool Sim7080::checkLink() {
-  command("AT+CCOAPACTION=5");  // evita che risposte non lette riempiano la coda
-  if (!query("AT+CNACT?", "+CNACT: 0,1")) _connected = false;
-  return _connected;
 }

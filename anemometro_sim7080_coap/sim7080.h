@@ -24,11 +24,9 @@ public:
   bool coapPost(uint16_t messageId, const char* path, uint8_t contentFormat,
                 const char* payload, bool confirmable);
 
-  // Interroga la PDP: i messaggi NON non segnalano la perdita della rete.
-  bool checkLink();
-
   // Smette di usare il modem, che resta registrato ed entra da solo in PSM
-  // allo scadere dell'active time. Il prossimo connect lo risveglia.
+  // quando la rete rilascia la connessione e scade l'active time.
+  // Il prossimo connect lo risveglia.
   void standby();
 
   // Spegnimento completo, solo per ripartire dopo errori ripetuti.

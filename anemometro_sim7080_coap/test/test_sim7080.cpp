@@ -1,4 +1,4 @@
-// Test sul computer del driver SIM7080 con un modem simulato e della gestione accensione.
+// Test sul computer del driver SIM7080 con un modem simulato.
 // Dalla cartella anemometro_sim7080_coap:
 //   g++ -std=c++17 -Itest -I. test/test_sim7080.cpp sim7080.cpp -o /tmp/test_sim7080 && /tmp/test_sim7080
 // Se su macOS non trova gli header C++, aggiungere:
@@ -6,7 +6,6 @@
 #include <stdlib.h>
 #include <vector>
 #include "Arduino.h"
-#include "modem_power.h"
 #include "sim7080.h"
 
 uint32_t fakeMillis = 0;
@@ -31,6 +30,8 @@ public:
   bool keepsContextInPsm = true;
   bool answersPowerOff = true;
   bool coapOk = true;
+  bool raiSupported = true;
+  int ignoreCommands = 0;
   int actionError = 0;
   bool serverAnswers = true;
   std::string urcBeforeReply;
@@ -84,6 +85,7 @@ private:
     std::string c = cmd;
     cmd.clear();
     if (!powered || inPsm || fakeMillis < bootAt) return;
+    if (ignoreCommands > 0) { ignoreCommands--; return; }
     commands.push_back(c);
     rx += urcBeforeReply;
     reply(c);
@@ -125,6 +127,8 @@ private:
       rx += "\r\nNORMAL POWER DOWN\r\n";
     } else if (c.rfind("AT+CCOAPPARA=", 0) == 0) {
       rx += coapOk ? "\r\nOK\r\n" : "\r\nERROR\r\n";
+    } else if (c.rfind("AT+CRAI=", 0) == 0) {
+      rx += raiSupported ? "\r\nOK\r\n" : "\r\nERROR\r\n";
     } else if (c == "AT+CCOAPACTION") {
       if (actionError) {
         rx += "\r\n+CCOAPACTION: " + std::to_string(actionError) + ",7\r\n\r\nOK\r\n";
@@ -186,6 +190,7 @@ static void testColdBootConnectAndPost() {
                          + PAYLOAD_HEX + "\"";
   CHECK(m.last("AT+CCOAPPARA") == expected);
   CHECK(m.count("AT+CCOAPACTION") == 1);
+  CHECK(m.commands[m.commands.size() - 2] == "AT+CRAI=1,0");  // prima dell'ultimo pacchetto
   CHECK(modem.connected());
 }
 
@@ -271,6 +276,7 @@ static void testConfirmableAcknowledged() {
   CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, true));
   CHECK(m.last("AT+CCOAPPARA").find("\"TYPE\",\"CON\"") != std::string::npos);
   CHECK(m.count("AT+CCOAPACTION=5") == 1);
+  CHECK(m.count("AT+CRAI=2,0") == 1);  // attende la risposta del server
   CHECK(modem.connected());
 }
 
@@ -308,16 +314,24 @@ static void testUrcBetweenPostsDetected() {
   }
 }
 
-static void testCheckLink() {
+// Con Cat-M il comando puo' non essere supportato: non deve bloccare l'invio
+static void testRaiRefusedStillSends() {
   FakeModem m; reset(m);
+  m.raiSupported = false;
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  CHECK(modem.checkLink());
-  m.pdpActive = false;
-  CHECK(!modem.checkLink());
-  CHECK(!modem.connected());
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+  CHECK(m.count("AT+CCOAPACTION") == 1);
+}
+
+// Un modem acceso che salta qualche risposta non deve ricevere l'impulso
+static void testSlowModemNotPulsed() {
+  FakeModem m; reset(m);
+  m.ignoreCommands = 2;
+  Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  CHECK(m.count("AT+CNACT=0,1") == 2);
+  CHECK(pwrkeyPulses == 0);
+  CHECK(m.powered);
 }
 
 static void testPowerOffThenOnAgain() {
@@ -358,7 +372,7 @@ static void testPowerOffWhenAlreadyOffNotPulsed() {
   CHECK(!m.powered);
 }
 
-static const char* PSM_CMD = "AT+CPSMS=1,,,\"00100010\",\"00001111\"";
+static const char* PSM_CMD = "AT+CPSMS=1,,,\"00100010\",\"00000001\"";
 
 static void testPsmRequestedOnce() {
   FakeModem m; reset(m);
@@ -448,40 +462,6 @@ static void testPsmWhileConnectedRecovers() {
   CHECK(pwrkeyPulses == 1);
 }
 
-static void testPolicy() {
-  const uint32_t MIN = 60000;
-  ModemPowerPolicy p(3.0f, 10 * MIN, 30 * MIN);
-  uint32_t t = 1000;
-  p.begin(t);
-  CHECK(p.modemNeeded(t));
-
-  // Vento: resta acceso. Calma: si spegne dopo 10 minuti esatti
-  p.onReport(8.0f, t);
-  p.onReport(2.9f, t + 5 * MIN);
-  CHECK(p.modemNeeded(t + 10 * MIN - 1));
-  p.onHeartbeatDone(t + 9 * MIN);
-  CHECK(!p.modemNeeded(t + 10 * MIN));
-
-  // Il messaggio di presenza arriva 30 minuti dopo l'ultimo invio
-  CHECK(!p.modemNeeded(t + 39 * MIN - 1));
-  CHECK(p.modemNeeded(t + 39 * MIN));
-  p.onHeartbeatDone(t + 39 * MIN);
-  CHECK(!p.modemNeeded(t + 39 * MIN));
-
-  // Una raffica riaccende subito, con soglia inclusa
-  p.onReport(3.0f, t + 40 * MIN);
-  CHECK(p.modemNeeded(t + 40 * MIN));
-}
-
-static void testPolicyMillisWrap() {
-  ModemPowerPolicy p(3.0f, 1000, 5000);
-  uint32_t t = 0xFFFFFF00;
-  p.begin(t);
-  CHECK(p.modemNeeded(t + 500));
-  CHECK(!p.modemNeeded(t + 1500));  // t + 1500 ha gia' superato lo zero
-  CHECK(p.modemNeeded(t + 5000));
-}
-
 int main() {
   testColdBootConnectAndPost();
   testRunningModemNotPulsed();
@@ -496,7 +476,8 @@ int main() {
   testConfirmableServerSilent();
   testUrcsAreIgnored();
   testUrcBetweenPostsDetected();
-  testCheckLink();
+  testRaiRefusedStillSends();
+  testSlowModemNotPulsed();
   testPowerOffThenOnAgain();
   testPowerOffFallsBackToPwrkey();
   testPowerOffWhenAlreadyOffNotPulsed();
@@ -507,8 +488,6 @@ int main() {
   testWakeFromPsmLosesContext();
   testStandbyNotYetInPsmNotPulsed();
   testPsmWhileConnectedRecovers();
-  testPolicy();
-  testPolicyMillisWrap();
   printf(failures ? "%d test falliti\n" : "tutti i test superati\n", failures);
   return failures ? 1 : 0;
 }
