@@ -12,3 +12,6 @@ __pycache__/
 
 # PlatformIO
 .pio/
+
+# Binario del server Go
+server/server

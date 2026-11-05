@@ -1,0 +1,13 @@
+# Configurazione di anemometer-collector.
+# Contiene il token: il file deve restare leggibile solo da root e dal gruppo anemometer.
+# Dopo una modifica: service anemometer-collector restart
+
+# URL e credenziali di InfluxDB v2. Con INFLUX_URL vuoto i dati finiscono solo nel log.
+INFLUX_URL=""
+INFLUX_TOKEN=""
+INFLUX_ORG="meteo_org"
+INFLUX_BUCKET="anemometri"
+
+# Indirizzo e porta UDP di ascolto del server CoAP
+COAP_BIND="::"
+COAP_PORT="5683"

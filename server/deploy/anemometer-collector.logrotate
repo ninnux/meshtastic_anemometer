@@ -1,0 +1,10 @@
+/var/log/anemometer-collector/collector.log {
+	weekly
+	rotate 8
+	compress
+	delaycompress
+	missingok
+	notifempty
+	# Il server tiene il file aperto: va svuotato sul posto, non spostato
+	copytruncate
+}

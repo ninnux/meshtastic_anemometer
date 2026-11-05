@@ -37,7 +37,8 @@ Con il firmware SIM7080 il percorso via LoRa è sostituito da:
 | `anemometro_bluetooth_stringaunica/` | Firmware base: velocità + direzione dalla banderuola, invio Meshtastic + BLE. |
 | `meshtastic_davis_anemometer_compensated/` | Firmware per XIAO nRF52840 **Sense**: aggiunge bussola QMC5883L + IMU LSM6DS3 per compensare la direzione con l'orientamento del dispositivo (tilt-compensated heading). Sperimentale. |
 | `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP ogni 5 minuti su rete cellulare, modem in PSM tra un invio e l'altro, BLE invariato. |
-| `collector_coap.py` | Ricevitore CoAP del firmware SIM7080: scrive su InfluxDB. |
+| `collector_coap.py` | Ricevitore CoAP del firmware SIM7080 in Python: scrive su InfluxDB. |
+| `server/` | Lo stesso ricevitore in Go, consigliato per il server, con lo script di deploy per Devuan in `server/deploy/`. |
 | `platformio.ini`, `pio_sketch_dir.py` | Compilazione con PlatformIO, un ambiente per ogni sketch. |
 | `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, massima e direzione. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
@@ -223,6 +224,8 @@ Per ogni messaggio scrive un punto nella measurement `meteo`, con i campi `wind_
 
 La porta UDP deve essere raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque raggiunga la porta può inviare dati a nome di una stazione. Una SIM con APN privata o una VPN risolverebbe il problema.
 
+Per il server è consigliata la versione in Go, descritta in [Ricevitore in Go e deploy su Devuan](#ricevitore-in-go-e-deploy-su-devuan).
+
 #### Test sul computer
 
 Provano il driver con un modem simulato, il payload e il calcolo della raffica. Non provano lo sketch `.ino` né l'hardware. Dalla cartella `anemometro_sim7080_coap/`:
@@ -246,6 +249,53 @@ Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Ma
 7. **Consumo:** misura la corrente del modem per vedere quanto dorme davvero.
 
 Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, ma per verificare il PSM serve un periodo più lungo.
+
+## Ricevitore in Go e deploy su Devuan
+
+`server/` è la versione in Go di `collector_coap.py`: stesso messaggio, stesse variabili d'ambiente, stessi dati su InfluxDB. In più:
+
+- **Binario unico:** è statico, quindi sul server non servono Python né librerie.
+- **InfluxDB fermo:** i punti restano in memoria con il loro orario e vengono riscritti quando torna raggiungibile. La coda contiene 2048 punti, circa una settimana per una stazione; a coda piena si perdono i più vecchi. Se il server viene fermato mentre InfluxDB è irraggiungibile, i punti in coda vanno persi.
+- **Messaggi duplicati:** un messaggio duplicato dalla rete viene scritto una sola volta.
+
+Serve Go 1.22 o più recente sul computer da cui si fa il deploy. Il token non compare mai sulla riga di comando del processo.
+
+### Deploy
+
+```bash
+cd server
+deploy/deploy.sh utente@server              # linux/amd64
+deploy/deploy.sh -a arm64 utente@server     # arm64 oppure armv7
+deploy/deploy.sh -p 2222 utente@server      # altra porta SSH
+```
+
+Lo script compila il binario, lo copia via SSH ed esegue `install.sh` sul server, con `sudo` se l'utente non è root. Si può rilanciare per aggiornare: la configurazione esistente non viene mai sovrascritta.
+
+Devuan usa di default sysvinit, quindi il servizio è uno script in `/etc/init.d`. Sul server vengono creati:
+
+| Percorso | Contenuto |
+|---|---|
+| `/usr/local/bin/anemometer-collector` | Binario |
+| `/etc/init.d/anemometer-collector` | Servizio, avviato al boot |
+| `/etc/default/anemometer-collector` | Configurazione con il token, permessi `640` |
+| `/var/log/anemometer-collector/collector.log` | Log, ruotato ogni settimana da `/etc/logrotate.d/anemometer-collector` |
+
+Il servizio gira con l'utente di sistema `anemometer`, senza privilegi di root.
+
+Dopo il primo deploy:
+
+1. inserisci `INFLUX_URL` e `INFLUX_TOKEN` in `/etc/default/anemometer-collector`: finché `INFLUX_URL` è vuoto, i dati finiscono solo nel log;
+2. riavvia con `service anemometer-collector restart`;
+3. apri la porta UDP 5683 sul firewall del server, perché lo script non tocca il firewall.
+
+Per controllare il servizio: `service anemometer-collector status` e `tail -f /var/log/anemometer-collector/collector.log`.
+
+### Test del server
+
+```bash
+cd server
+go test ./...
+```
 
 ## Web app BLE
 
