@@ -24,7 +24,7 @@
 #define MODEM_BAUD_RATE     115200
 #define MODEM_PWRKEY_PIN    1
 #define MODEM_PWRKEY_ACTIVE HIGH  // HIGH con transistor sulla scheda, LOW se diretto
-#define MODEM_APN           "internet"
+#define MODEM_APN           "iot.1nce.net"
 
 // ── CoAP ─────────────────────────────────────────────────────
 #define COAP_SERVER_IP   "192.0.2.1"  // IPv4 del server con collector_coap.py
