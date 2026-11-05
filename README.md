@@ -205,7 +205,8 @@ Questi campi e questo bucket **non** coincidono con quelli scritti da `collector
 
 ## Problemi noti / TODO
 
-- Nel firmware base `Rotations / 3.0f` e poi `* 3.0f` si annullano: la formula della velocità resta `rotazioni × 0.9 × 0.868976` (0.868976 = conversione mph → nodi). Da verificare la costante 0.9 rispetto all'anemometro usato e al periodo di campionamento reale.
+- La velocità è `rotazioni × 0.9 × 0.868976` (0.868976 = conversione mph → nodi). Da verificare la costante 0.9: per un Davis con un impulso a giro e campioni da 1 s, 1600 giri/ora = 1 mph darebbe 2.25.
+- Il commit `73c061b` (9 ottobre 2026) ha portato il campione da circa 0,5 s a 1 s senza cambiare la formula: a parità di vento i valori sono raddoppiati, quindi i dati precedenti sono su una scala dimezzata.
 - I settori cardinali non sono simmetrici (S fino a 212° invece di 202°).
 - `ai/monitor.py` fa `status, prob = predict_now(...)`, ma `predict_now` restituisce solo una stringa.
 - `analizza_modello.py` ha il nome del modello cablato nel codice; gli script OpenWeather sono duplicati e potrebbero diventare un unico script con lo spot come parametro.

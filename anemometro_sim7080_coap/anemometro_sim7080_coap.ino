@@ -158,7 +158,7 @@ void loop() {
 
   uint32_t sampleMs = millis();
   noInterrupts();
-  float rot = (float) Rotations/ 3.0f;
+  uint32_t rot = Rotations;
   Rotations = 0;
   interrupts();
 
@@ -167,7 +167,7 @@ void loop() {
   float elapsedS = (sampleMs - LastSampleMs) / 1000.0f;
   LastSampleMs = sampleMs;
 
-  WindSpeed = rot * 0.9f * 3.0f * 0.868976f / elapsedS;
+  WindSpeed = rot * 0.9f * 0.868976f / elapsedS;
   WindSpeedSum += WindSpeed * elapsedS;
   WindTimeSum  += elapsedS;
   WindSpeedMean = WindSpeedSum / WindTimeSum;
