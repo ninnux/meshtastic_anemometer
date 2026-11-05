@@ -3,6 +3,7 @@
 //   g++ -std=c++17 -Itest -I. test/test_sim7080.cpp sim7080.cpp -o /tmp/test_sim7080 && /tmp/test_sim7080
 // Se su macOS non trova gli header C++, aggiungere:
 //   -isysroot $(xcrun --show-sdk-path) -I$(xcrun --show-sdk-path)/usr/include/c++/v1
+#include <algorithm>
 #include <stdlib.h>
 #include <vector>
 #include "Arduino.h"
@@ -28,6 +29,10 @@ public:
   int attachAfterPolls = 0;
   bool pdpActive = false;
   bool apnStored = false;
+  int bootingCommands = 0;  // appena sveglio: AT e' ok, il resto no
+  std::string networkMode = "2";                 // come il modem di fabbrica provato
+  std::string nbBands = "8";
+  int cnactFailures = 0;
   std::string storedPsm;
   bool psmSupported = true;
   bool inPsm = false;
@@ -94,6 +99,12 @@ private:
     if (ignoreCommands > 0) { ignoreCommands--; return; }
     commands.push_back(c);
     rx += urcBeforeReply;
+    if (bootingCommands > 0 && c != "AT" && c != "ATE0") {
+      bootingCommands--;
+      if (c == "AT+CPIN?") rx += "\r\n+CPIN: NOT READY\r\n\r\nOK\r\n";
+      else rx += "\r\nERROR\r\n";
+      return;
+    }
     reply(c);
   }
 
@@ -102,6 +113,17 @@ private:
       rx += simReady ? "\r\n+CPIN: READY\r\n\r\nOK\r\n" : "\r\n+CPIN: NOT READY\r\n\r\nOK\r\n";
     } else if (c == "AT+CGATT?") {
       rx += attachAfterPolls-- <= 0 ? "\r\n+CGATT: 1\r\n\r\nOK\r\n" : "\r\n+CGATT: 0\r\n\r\nOK\r\n";
+    } else if (c == "AT+CMNB?") {
+      rx += "\r\n+CMNB: " + networkMode + "\r\n\r\nOK\r\n";
+    } else if (c.rfind("AT+CMNB=", 0) == 0) {
+      networkMode = c.substr(strlen("AT+CMNB="));
+      rx += "\r\nOK\r\n";
+    } else if (c == "AT+CBANDCFG?") {
+      rx += "\r\n+CBANDCFG: \"CAT-M\",1,2,3,4,5,8,12,13,14,18,19,20,25,26,27,28,66,85\r\n";
+      rx += "+CBANDCFG: \"NB-IOT\"," + nbBands + "\r\n\r\nOK\r\n";
+    } else if (c.rfind("AT+CBANDCFG=\"NB-IOT\",", 0) == 0) {
+      nbBands = c.substr(strlen("AT+CBANDCFG=\"NB-IOT\","));
+      rx += "\r\nOK\r\n";
     } else if (c == "AT+CGDCONT?") {
       if (apnStored) rx += "\r\n+CGDCONT: 1,\"IP\",\"internet\",\"0.0.0.0\",0,0,0,0\r\n";
       rx += "\r\nOK\r\n";
@@ -124,6 +146,11 @@ private:
       rx += pdpActive ? "\r\n+CNACT:0,1,\"10.0.0.2\"\r\n" : "\r\n+CNACT:0,0,\"0.0.0.0\"\r\n";
       rx += "+CNACT: 1,0,\"0.0.0.0\"\r\n\r\nOK\r\n";
     } else if (c == "AT+CNACT=0,1") {
+      if (cnactFailures != 0) {  // -1: non si attiva mai
+        if (cnactFailures > 0) cnactFailures--;
+        rx += "\r\nOK\r\n\r\n+APP PDP: 0,DEACTIVE\r\n";
+        return;
+      }
       pdpActive = true;
       rx += "\r\nOK\r\n\r\n+APP PDP: 0,ACTIVE\r\n";
     } else if (c == "AT+CPOWD=1") {
@@ -205,6 +232,85 @@ static void testColdBootConnectAndPost() {
   CHECK(modem.connected());
 }
 
+// Tecnologia e bande vanno corrette, e una sola volta: restano salvate nel modem
+static void testNetworkConfiguredWhenDifferent() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.networkMode == "3");
+  CHECK(m.nbBands == "3,8,20");
+  CHECK(m.count("AT+CFUN=0") == 1);
+  CHECK(m.count("AT+CFUN=1") == 1);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CMNB=") == 1);
+  CHECK(m.count("AT+CBANDCFG=") == 1);
+  CHECK(m.count("AT+CFUN=0") == 1);
+}
+
+// Basta una sola impostazione diversa per scriverle tutte
+static void testOnlyBandsDifferent() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "3";
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.nbBands == "3,8,20");
+}
+
+// Scoperto col modem vero: appena sveglio le letture danno ERROR, e il firmware riscriveva il PSM
+static void testNothingRewrittenWhileBooting() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "3";
+  m.nbBands = "3,8,20";
+  m.storedPsm = "1,,,\"00001100\",\"00000001\"";
+  m.bootingCommands = 3;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  // Il PSM si legge dopo la registrazione, quando il modem e' pronto
+  std::vector<std::string>& c = m.commands;
+  auto attach = std::find(c.begin(), c.end(), "AT+CGATT?");
+  auto psm = std::find(c.begin(), c.end(), "AT+CPSMS?");
+  CHECK(attach < psm);
+  CHECK(m.count("AT+CPSMS=") == 0);
+  CHECK(m.count("AT+CFUN") == 0);
+  CHECK(m.count("AT+CMNB=") == 0);
+}
+
+// Dopo il PSM il modem vero rifiuta AT+CNACT per circa 4 s: 8 tentativi nelle prove
+static void testPdpRetriedUntilActive() {
+  FakeModem m; reset(m);
+  m.cnactFailures = 7;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(modem.connected());
+  CHECK(m.count("AT+CNACT=0,1") == 8);
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+}
+
+static void testPdpGivesUp() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "3";
+  m.nbBands = "3,8,20";
+  m.cnactFailures = -1;
+  Sim7080 modem(m, 1, HIGH);
+  uint32_t start = fakeMillis;
+  CHECK(!modem.connect(APN, HOST, 5683));
+  CHECK(!modem.connected());
+  CHECK(m.count("AT+CNACT=0,1") >= 10);
+  CHECK(fakeMillis - start >= 30000 && fakeMillis - start < 45000);
+}
+
+// Il modem normalizza il TAU: con il valore giusto non va riscritto a ogni risveglio
+static void testStoredPsmValueMatchesRealModem() {
+  FakeModem m; reset(m);
+  m.storedPsm = "1,,,\"00001100\",\"00000001\"";
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CPSMS=") == 0);
+}
+
 // Un impulso a modem acceso lo spegnerebbe
 static void testRunningModemNotPulsed() {
   FakeModem m; reset(m);
@@ -219,6 +325,8 @@ static void testRunningModemNotPulsed() {
 static void testStoredApnSkipsCfun() {
   FakeModem m; reset(m);
   m.apnStored = true;
+  m.networkMode = "3";
+  m.nbBands = "3,8,20";
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
   CHECK(m.count("AT+CFUN") == 0);
@@ -383,7 +491,7 @@ static void testPowerOffWhenAlreadyOffNotPulsed() {
   CHECK(!m.powered);
 }
 
-static const char* PSM_CMD = "AT+CPSMS=1,,,\"00100010\",\"00000001\"";
+static const char* PSM_CMD = "AT+CPSMS=1,,,\"00001100\",\"00000001\"";
 
 static void testPsmRequestedOnce() {
   FakeModem m; reset(m);
@@ -781,6 +889,12 @@ static void testGustUsesMeasuredTime() {
 
 int main() {
   testColdBootConnectAndPost();
+  testNetworkConfiguredWhenDifferent();
+  testOnlyBandsDifferent();
+  testNothingRewrittenWhileBooting();
+  testPdpRetriedUntilActive();
+  testPdpGivesUp();
+  testStoredPsmValueMatchesRealModem();
   testRunningModemNotPulsed();
   testStoredApnSkipsCfun();
   testModemDead();

@@ -47,7 +47,7 @@ private:
   bool isAlive();
   bool waitAlive(uint32_t timeoutMs);
   void configurePsm();
-  bool configureApn(const char* apn);
+  bool configureNetwork(const char* apn);
   bool waitSimReady(uint32_t timeoutMs);
   bool waitAttach(uint32_t timeoutMs);
   bool activatePdp(const char* apn);

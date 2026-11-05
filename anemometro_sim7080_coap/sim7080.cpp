@@ -8,6 +8,8 @@
 #define SIM_TIMEOUT_MS     10000UL
 #define ATTACH_TIMEOUT_MS  180000UL  // il primo attach Cat-M/NB-IoT e' lento
 #define PDP_TIMEOUT_MS     30000UL
+#define PDP_RESPONSE_MS    10000UL
+#define PDP_RETRY_MS       500UL
 #define CFUN_TIMEOUT_MS    10000UL   // massimo indicato dal manuale
 #define ACTION_TIMEOUT_MS  10000UL
 #define NTP_TIMEOUT_MS     30000UL
@@ -15,13 +17,20 @@
 #define POLL_MS            5
 
 #define COAP_CODE_POST     2
+
+// Cat-M e NB-IoT. Di fabbrica un modem puo' avere solo NB-IoT sulla banda 8, con cui
+// in Italia non trova rete: Vodafone NB-IoT usa la banda 20.
+#define NETWORK_MODE       "3"
+#define NB_IOT_BANDS       "3,8,20"
 #define AT_LINE_MAX        559  // limite della riga di comando secondo il manuale
 
 // Valori richiesti alla rete, che puo' assegnarne altri (vedi AT+CPSMRDP).
 // Codifica in 3GPP TS 24.008: 3 bit di unita' + 5 bit di valore.
 // L'active time e' il minimo diverso da zero, cosi' il modem dorme subito dopo
 // l'invio. Per il manuale un valore assegnato pari a 0 indica PSM non supportato.
-#define PSM_PERIODIC_TAU   "00100010"  // unita' 1 h x 2 = 2 ore
+// Il modem normalizza il valore che riceve e AT+CPSMS? riporta questo: con un'altra
+// scrittura della stessa durata verrebbe riscritto in flash a ogni risveglio.
+#define PSM_PERIODIC_TAU   "00001100"  // unita' 10 min x 12 = 2 ore
 #define PSM_ACTIVE_TIME    "00000001"  // unita' 2 s x 1 = 2 s
 
 Sim7080::Sim7080(Stream& at, uint8_t pwrkeyPin, uint8_t pwrkeyActive)
@@ -167,17 +176,33 @@ void Sim7080::configurePsm() {
   if (!command(cmd)) Serial.println("SIM7080: configurazione PSM fallita");
 }
 
-bool Sim7080::configureApn(const char* apn) {
-  char cmd[96];
-  // L'APN resta salvato nel modem: riscriverlo a ogni accensione
-  // costringerebbe a ripetere CFUN e allungherebbe la registrazione.
-  snprintf(cmd, sizeof(cmd), "+CGDCONT: 1,\"IP\",\"%s\"", apn);
-  if (query("AT+CGDCONT?", cmd)) return true;
+bool Sim7080::configureNetwork(const char* apn) {
+  char expectedApn[96];
+  snprintf(expectedApn, sizeof(expectedApn), "+CGDCONT: 1,\"IP\",\"%s\"", apn);
 
-  snprintf(cmd, sizeof(cmd), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
+  // Sono salvati nel modem: riscriverli a ogni accensione costringerebbe a ripetere CFUN e
+  // allungherebbe la registrazione. Se una lettura non da' OK il modem non e' ancora pronto,
+  // e non si puo' dire che i valori siano diversi: si riprova al prossimo avvio.
+  const char* const reads[][2] = {
+    {"AT+CMNB?", "+CMNB: " NETWORK_MODE},
+    {"AT+CBANDCFG?", "+CBANDCFG: \"NB-IOT\"," NB_IOT_BANDS},
+    {"AT+CGDCONT?", expectedApn},
+  };
+  bool different = false;
+  for (const auto& read : reads) {
+    if (query(read[0], read[1])) continue;
+    if (!lineStartsWith("OK")) return true;
+    different = true;
+  }
+  if (!different) return true;
+
+  char writeApn[96];
+  snprintf(writeApn, sizeof(writeApn), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
   // Alcuni operatori richiedono l'APN gia' in fase di registrazione
   return command("AT+CFUN=0", CFUN_TIMEOUT_MS)
-      && command(cmd)
+      && command("AT+CMNB=" NETWORK_MODE)
+      && command("AT+CBANDCFG=\"NB-IOT\"," NB_IOT_BANDS)
+      && command(writeApn)
       && command("AT+CFUN=1", CFUN_TIMEOUT_MS);
 }
 
@@ -206,8 +231,15 @@ bool Sim7080::activatePdp(const char* apn) {
   snprintf(cmd, sizeof(cmd), "AT+CNCFG=0,1,\"%s\"", apn);
   if (!command(cmd)) return false;
 
-  sendCmd("AT+CNACT=0,1");
-  return waitLine("+APP PDP: 0,ACTIVE", "+APP PDP: 0,DEACTIVE", PDP_TIMEOUT_MS);
+  // Dopo il PSM AT+CGATT? riporta 1 anche se la radio non e' ancora pronta: i primi
+  // tentativi falliscono con DEACTIVE, per circa 4 s nelle prove con il modem vero.
+  uint32_t start = xTaskGetTickCount();
+  while (xTaskGetTickCount() - start < ms2tick(PDP_TIMEOUT_MS)) {
+    sendCmd("AT+CNACT=0,1");
+    if (waitLine("+APP PDP: 0,ACTIVE", "+APP PDP: 0,DEACTIVE", PDP_RESPONSE_MS)) return true;
+    delay(PDP_RETRY_MS);
+  }
+  return false;
 }
 
 bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
@@ -221,10 +253,9 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
     }
   }
   command("ATE0");
-  configurePsm();
 
-  if (!configureApn(apn)) {
-    Serial.println("SIM7080: configurazione APN fallita");
+  if (!configureNetwork(apn)) {
+    Serial.println("SIM7080: configurazione rete fallita");
     return false;
   }
   if (!waitSimReady(SIM_TIMEOUT_MS)) {
@@ -235,6 +266,8 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port) {
     Serial.println("SIM7080: rete non disponibile");
     return false;
   }
+  // Solo ora: appena sveglio il modem risponde ad AT ma AT+CPSMS? da' ERROR
+  configurePsm();
   if (!activatePdp(apn)) {
     Serial.println("SIM7080: attivazione PDP fallita");
     return false;
