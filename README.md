@@ -86,7 +86,7 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 ### Versione SIM7080 + CoAP
 
-`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Ogni 60 s invia media e massima del periodo (nodi) e la direzione (media vettoriale dei campioni, in gradi), usando il client CoAP del modem (`AT+CCOAP*`).
+`anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G (Cat-M / NB-IoT). Ogni 60 s invia un messaggio con 6 finestre da 10 s, ciascuna con media e massima (nodi) e direzione (media vettoriale dei campioni, in gradi), usando il client CoAP del modem (`AT+CCOAP*`).
 
 **Collegamenti:** `D6` (TX) → RX modem, `D7` (RX) ← TX modem, `D1` → PWRKEY (obbligatorio, serve a risvegliare il modem dal PSM), GND in comune, a 115200 baud. Il modem va alimentato a parte, non dal pin 3V3 della XIAO, perché ha picchi di corrente elevati. Le sue linee logiche lavorano a 1,8 V: se il modulo non ha un traslatore di livello, serve aggiungerlo.
 
@@ -95,8 +95,10 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 **Messaggio:** CoAP POST su `coap://<server>:5683/wind`, Content-Format `application/json`, non confermabile (NON) salvo `COAP_CONFIRMABLE`:
 
 ```json
-{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225}
+{"id":"first_anemometer","mean":[10.8,11.2,9.7,10.1,12.3,11.0],"max":[15.1,14.2,12.0,13.5,16.8,14.0],"dir":[225,230,218,222,240,235]}
 ```
+
+I valori vanno dalla finestra più vecchia alla più recente. Il messaggio è di circa 170 byte con le intestazioni IP/UDP, quindi circa 7,5 MB al mese escluso l'overhead dell'operatore.
 
 **Risparmio energetico (PSM):** il modem non si spegne: resta registrato in rete e dopo ogni invio torna a dormire con il Power Saving Mode (`AT+CPSMS`), con o senza vento.
 
@@ -118,7 +120,7 @@ pip install aiocoap influxdb-client
 INFLUX_URL=http://... INFLUX_TOKEN=... python collector_coap.py
 ```
 
-Scrive nella measurement `meteo` i campi `wind_mean`, `wind_max`, `direction_deg` con tag `sensor_name`; senza `INFLUX_URL` stampa soltanto i dati. Serve la porta UDP 5683 raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque conosca l'indirizzo può inviare dati.
+Per ogni messaggio scrive 6 punti nella measurement `meteo`, con i campi `wind_mean`, `wind_max`, `direction_deg` e il tag `sensor_name`. L'orario di ogni punto è stimato da quello di ricezione, a passi di 10 s; senza `INFLUX_URL` stampa soltanto i dati. Serve la porta UDP 5683 raggiungibile da Internet. Il traffico non è cifrato né autenticato: chiunque conosca l'indirizzo può inviare dati.
 
 **Test sul computer** (driver con modem simulato): vedi il comando in testa a `anemometro_sim7080_coap/test/test_sim7080.cpp`.
 

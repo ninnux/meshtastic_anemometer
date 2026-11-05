@@ -13,6 +13,7 @@
 #define POLL_MS            5
 
 #define COAP_CODE_POST     2
+#define AT_LINE_MAX        559  // limite della riga di comando secondo il manuale
 
 // Valori richiesti alla rete, che puo' assegnarne altri (vedi AT+CPSMRDP).
 // Codifica in 3GPP TS 24.008: 3 bit di unita' + 5 bit di valore.
@@ -260,7 +261,7 @@ bool Sim7080::coapPost(uint16_t messageId, const char* path, uint8_t contentForm
   flushInput();  // un URC arrivato tra due invii puo' segnalare la rete persa
   if (!_connected) return false;
 
-  char cmd[320];
+  char cmd[AT_LINE_MAX + 1];
   int n = snprintf(cmd, sizeof(cmd),
                    "AT+CCOAPPARA=\"CODE\",%d,\"TYPE\",\"%s\",\"MID\",%u,"
                    "\"URI-PATH\",0,\"%s\",\"CONTENT-FORMAT\",%u,\"PAYLOAD\",1,\"",

@@ -1,10 +1,12 @@
 """
-Ricevitore CoAP per anemometro_sim7080_coap: POST su /wind con payload JSON
-{"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi}.
+Ricevitore CoAP per anemometro_sim7080_coap: POST su /wind ogni minuto con
+payload JSON {"id": nome_stazione, "mean": [kn], "max": [kn], "dir": [gradi]},
+con 6 valori per campo, uno per finestra da 10 s, dal più vecchio al più recente.
 
 Senza INFLUX_URL nell'ambiente stampa soltanto i dati ricevuti.
 """
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import math
 import os
@@ -23,6 +25,8 @@ COAP_BIND = os.environ.get("COAP_BIND", "::")
 COAP_PORT = int(os.environ.get("COAP_PORT", "5683"))
 
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
+WINDOWS = 6
+WINDOW_SECONDS = 10
 
 
 def parse_report(payload):
@@ -30,16 +34,34 @@ def parse_report(payload):
     try:
         data = json.loads(payload)
         name = data["id"]
-        mean, max_, direction = float(data["mean"]), float(data["max"]), int(data["dir"])
+        means, maxes, directions = data["mean"], data["max"], data["dir"]
+        if not all(isinstance(v, list) and len(v) == WINDOWS for v in (means, maxes, directions)):
+            return None
+        means = [float(v) for v in means]
+        maxes = [float(v) for v in maxes]
+        directions = [int(v) for v in directions]
     except (ValueError, KeyError, TypeError):
         return None
     if not isinstance(name, str) or not NAME_PATTERN.match(name):
         return None
-    if not (math.isfinite(mean) and math.isfinite(max_)) or mean < 0 or max_ < 0:
+    if not all(math.isfinite(v) and v >= 0 for v in means + maxes):
         return None
-    if not 0 <= direction <= 360:
+    if not all(0 <= d <= 360 for d in directions):
         return None
-    return {"name": name, "mean": mean, "max": max_, "dir_deg": direction}
+    return {"name": name, "mean": means, "max": maxes, "dir_deg": directions}
+
+
+def build_points(report, received_at):
+    """Un punto per finestra. L'orario è stimato dalla ricezione: l'ultima finestra si chiude poco prima."""
+    points = []
+    for i in range(WINDOWS):
+        points.append(Point("meteo")
+                      .tag("sensor_name", report["name"])
+                      .field("wind_mean", report["mean"][i])
+                      .field("wind_max", report["max"][i])
+                      .field("direction_deg", report["dir_deg"][i])
+                      .time(received_at - timedelta(seconds=(WINDOWS - 1 - i) * WINDOW_SECONDS)))
+    return points
 
 
 class WindResource(resource.Resource):
@@ -55,13 +77,8 @@ class WindResource(resource.Resource):
             return aiocoap.Message(code=aiocoap.BAD_REQUEST) if confirmable else aiocoap.message.NoResponse
 
         if self.write_api:
-            point = Point("meteo") \
-                .tag("sensor_name", report["name"]) \
-                .field("wind_mean", report["mean"]) \
-                .field("wind_max", report["max"]) \
-                .field("direction_deg", report["dir_deg"])
-            self.write_api.write(bucket=INFLUX_BUCKET, record=point)
-        print(f"Ricevuto {report['name']}: media {report['mean']}kn max {report['max']}kn dir {report['dir_deg']}", flush=True)
+            self.write_api.write(bucket=INFLUX_BUCKET, record=build_points(report, datetime.now(timezone.utc)))
+        print(f"Ricevuto {report['name']}: media {report['mean']} max {report['max']} dir {report['dir_deg']}", flush=True)
 
         # Ai messaggi NON non si risponde: consumerebbe solo traffico dati
         return aiocoap.Message(code=aiocoap.CHANGED) if confirmable else aiocoap.message.NoResponse

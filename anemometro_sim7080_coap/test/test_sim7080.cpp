@@ -7,6 +7,7 @@
 #include <vector>
 #include "Arduino.h"
 #include "sim7080.h"
+#include "wind_report.h"
 
 uint32_t fakeMillis = 0;
 int pwrkeyPulses = 0;
@@ -264,7 +265,7 @@ static void testOversizedPayloadRejected() {
   FakeModem m; reset(m);
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  std::string big(200, 'x');
+  std::string big(300, 'x');
   CHECK(!modem.coapPost(1, "wind", 50, big.c_str(), false));
   CHECK(m.count("AT+CCOAPPARA") == 0);
 }
@@ -462,6 +463,54 @@ static void testPsmWhileConnectedRecovers() {
   CHECK(pwrkeyPulses == 1);
 }
 
+// La riga AT non deve superare il limite del modem neanche con il payload massimo
+static void testPayloadFitsAtLine() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  std::string longest(200, 'x');  // dimensione del buffer del payload nello sketch
+  CHECK(modem.coapPost(65535, "wind", 50, longest.c_str(), true));
+  CHECK(m.last("AT+CCOAPPARA").size() <= 559);
+}
+
+static const WindReport SAMPLE_REPORT = {
+  {10.8f, 11.2f, 9.7f, 10.1f, 12.3f, 11.0f},
+  {15.1f, 14.2f, 12.0f, 13.5f, 16.8f, 14.0f},
+  {225, 230, 218, 222, 240, 235},
+};
+
+static void testPayloadFormat() {
+  char buf[200];
+  CHECK(formatWindPayload(buf, sizeof(buf), "first_anemometer", SAMPLE_REPORT));
+  CHECK(strcmp(buf, "{\"id\":\"first_anemometer\","
+                    "\"mean\":[10.8,11.2,9.7,10.1,12.3,11.0],"
+                    "\"max\":[15.1,14.2,12.0,13.5,16.8,14.0],"
+                    "\"dir\":[225,230,218,222,240,235]}") == 0);
+}
+
+static void testPayloadWorstCaseFitsSketchBuffer() {
+  WindReport worst;
+  for (int i = 0; i < WIND_WINDOWS; i++) {
+    worst.mean[i] = 999.9f;
+    worst.max[i] = 999.9f;
+    worst.dir[i] = 359;
+  }
+  char buf[200];
+  CHECK(formatWindPayload(buf, sizeof(buf), "first_anemometer", worst));
+}
+
+static void testPayloadTooLong() {
+  size_t needed = strlen("{\"id\":\"a\",") + 1;
+  char buf[200];
+  CHECK(!formatWindPayload(buf, needed, "a", SAMPLE_REPORT));
+  CHECK(!formatWindPayload(buf, 0, "a", SAMPLE_REPORT));
+  // Un byte in meno del necessario non deve passare
+  CHECK(formatWindPayload(buf, sizeof(buf), "a", SAMPLE_REPORT));
+  size_t full = strlen(buf);
+  CHECK(!formatWindPayload(buf, full, "a", SAMPLE_REPORT));
+  CHECK(formatWindPayload(buf, full + 1, "a", SAMPLE_REPORT));
+}
+
 int main() {
   testColdBootConnectAndPost();
   testRunningModemNotPulsed();
@@ -488,6 +537,10 @@ int main() {
   testWakeFromPsmLosesContext();
   testStandbyNotYetInPsmNotPulsed();
   testPsmWhileConnectedRecovers();
+  testPayloadFitsAtLine();
+  testPayloadFormat();
+  testPayloadWorstCaseFitsSketchBuffer();
+  testPayloadTooLong();
   printf(failures ? "%d test falliti\n" : "tutti i test superati\n", failures);
   return failures ? 1 : 0;
 }

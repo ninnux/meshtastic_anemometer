@@ -11,6 +11,7 @@
 #include <bluefruit.h>
 #include <math.h>
 #include "sim7080.h"
+#include "wind_report.h"
 
 // ── Pin ──────────────────────────────────────────────────────
 #define WindSensorPin  2
@@ -51,7 +52,7 @@ bool     isAdvertising = false;
 SoftwareTimer sampleTimer;
 
 // ── Variabili anemometro ─────────────────────────────────────
-volatile bool     IsReportRequired      = false;
+volatile bool     IsWindowRequired      = false;
 volatile bool     IsBLEUpdateRequired   = false;
 volatile uint8_t  TimerCount            = 0;
 volatile uint32_t Rotations             = 0;
@@ -70,12 +71,6 @@ int   windCalDirection  = 0;
 char  windCompassDirection[4] = "N";
 
 // ── Passaggio dati al task del modem ─────────────────────────
-struct WindReport {
-  float mean;
-  float max;
-  int   dir;
-};
-
 SemaphoreHandle_t sampleSemaphore;
 QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vince l'ultimo
 
@@ -86,7 +81,7 @@ void isr_timer_cb(TimerHandle_t xTimerID);
 void isr_rotation();
 void getWindDirection();
 int  meanWindDirection();
-void queueReport();
+void closeWindow();
 void modemLoop();
 bool sendReport(const WindReport& report);
 void setupBLE();
@@ -183,10 +178,10 @@ void loop() {
     }
   }
 
-  // ── Report ogni 60s ───────────────────────────────────────
-  if (IsReportRequired) {
-    IsReportRequired = false;
-    queueReport();
+  // ── Chiusura finestra ogni 10s ────────────────────────────
+  if (IsWindowRequired) {
+    IsWindowRequired = false;
+    closeWindow();
     WindSpeedSum  = 0;
     WindSpeedDiv  = 0;
     WindSpeedMean = 0;
@@ -197,11 +192,21 @@ void loop() {
 }
 
 // ============================================================
-// Report – Prepara i valori del periodo per il task del modem
+// Report – Registra la finestra da 10 s e, completato il minuto,
+// passa le 6 finestre al task del modem
 // ============================================================
-void queueReport() {
-  WindReport report = { WindSpeedMean, WindSpeedMax, meanWindDirection() };
-  xQueueOverwrite(reportQueue, &report);
+void closeWindow() {
+  static WindReport report;
+  static uint8_t    window = 0;
+
+  report.mean[window] = WindSpeedMean;
+  report.max[window]  = WindSpeedMax;
+  report.dir[window]  = meanWindDirection();
+
+  if (++window >= WIND_WINDOWS) {
+    window = 0;
+    xQueueOverwrite(reportQueue, &report);
+  }
 }
 
 // Media vettoriale: la media aritmetica di 350° e 10° darebbe 180° invece di 0°
@@ -248,10 +253,11 @@ bool sendReport(const WindReport& report) {
   // scambi i messaggi dopo una riaccensione per duplicati di quelli precedenti.
   static uint16_t messageId = (uint16_t)millis();
 
-  char payload[80];
-  snprintf(payload, sizeof(payload),
-           "{\"id\":\"%s\",\"mean\":%.1f,\"max\":%.1f,\"dir\":%d}",
-           NODE_NAME, report.mean, report.max, report.dir);
+  char payload[200];
+  if (!formatWindPayload(payload, sizeof(payload), NODE_NAME, report)) {
+    Serial.println("Report troppo lungo");
+    return false;
+  }
 
   bool sent = modem.coapPost(messageId++, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
                              payload, COAP_CONFIRMABLE);
@@ -331,9 +337,9 @@ void isr_timer_cb(TimerHandle_t xTimerID) {
   (void)xTimerID;
   TimerCount++;
 
-  // report ogni 120 tick (60 s), impostato prima di risvegliare il loop
-  if (TimerCount >= 120) {
-    IsReportRequired = true;
+  // finestra ogni 20 tick (10 s), impostata prima di risvegliare il loop
+  if (TimerCount >= 20) {
+    IsWindowRequired = true;
     TimerCount = 0;
   }
 
