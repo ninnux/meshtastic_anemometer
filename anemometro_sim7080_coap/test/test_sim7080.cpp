@@ -160,7 +160,10 @@ private:
       pdpActive = false;
       rx += "\r\nNORMAL POWER DOWN\r\n";
     } else if (c.rfind("AT+CCOAPPARA=", 0) == 0) {
-      rx += coapOk ? "\r\nOK\r\n" : "\r\nERROR\r\n";
+      // Il modem vero risponde ERROR con MID oltre 9999
+      size_t at = c.find("\"MID\",");
+      bool midOk = at != std::string::npos && atol(c.c_str() + at + 6) <= 9999;
+      rx += coapOk && midOk ? "\r\nOK\r\n" : "\r\nERROR\r\n";
     } else if (c == "AT+CNTP") {
       std::string result = ntpResult;
       if (ntpFailures > 0) { ntpFailures--; result = "+CNTP: 62"; }
@@ -463,6 +466,17 @@ static void testSlowModemNotPulsed() {
   CHECK(modem.connect(APN, HOST, 5683));
   CHECK(pwrkeyPulses == 0);
   CHECK(m.powered);
+}
+
+// Il contatore dello sketch parte da millis() e supera presto 9999
+static void testMessageIdWrapsBelowModemLimit() {
+  FakeModem m; reset(m);
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(modem.coapPost(18537, "wind", 50, PAYLOAD, false));
+  CHECK(m.last("AT+CCOAPPARA").find("\"MID\",8537,") != std::string::npos);
+  CHECK(modem.coapPost(65535, "wind", 50, PAYLOAD, false));
+  CHECK(m.last("AT+CCOAPPARA").find("\"MID\",5535,") != std::string::npos);
 }
 
 static void testPowerOffThenOnAgain() {
@@ -933,6 +947,7 @@ int main() {
   testUrcBetweenPostsDetected();
   testRaiRefusedStillSends();
   testSlowModemNotPulsed();
+  testMessageIdWrapsBelowModemLimit();
   testPowerOffThenOnAgain();
   testPowerOffFallsBackToPwrkey();
   testPowerOffWhenAlreadyOffNotPulsed();

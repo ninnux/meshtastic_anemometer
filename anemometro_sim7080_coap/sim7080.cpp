@@ -19,6 +19,7 @@
 #define POLL_MS            5
 
 #define COAP_CODE_POST     2
+#define COAP_MID_LIMIT     10000  // il modem risponde ERROR a CCOAPPARA con MID oltre 9999
 
 // Di fabbrica un modem puo' avere NB-IoT solo sulla banda 8, con cui in Italia
 // non trova rete: Vodafone NB-IoT usa la banda 20.
@@ -338,7 +339,7 @@ bool Sim7080::coapPost(uint16_t messageId, const char* path, uint8_t contentForm
   int n = snprintf(cmd, sizeof(cmd),
                    "AT+CCOAPPARA=\"CODE\",%d,\"TYPE\",\"%s\",\"MID\",%u,"
                    "\"URI-PATH\",0,\"%s\",\"CONTENT-FORMAT\",%u,\"PAYLOAD\",1,\"",
-                   COAP_CODE_POST, confirmable ? "CON" : "NON", messageId,
+                   COAP_CODE_POST, confirmable ? "CON" : "NON", messageId % COAP_MID_LIMIT,
                    path, contentFormat);
 
   // Il payload e' passato in esadecimale: le virgolette del JSON

@@ -290,8 +290,7 @@ bool sendReport(const WindReport& report) {
     return false;
   }
 
-  // Il SIM7080 risponde ERROR a CCOAPPARA con MID oltre 32767
-  bool sent = modem.coapPost(messageId++ & 0x7FFF, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
+  bool sent = modem.coapPost(messageId++, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
                              payload, COAP_CONFIRMABLE);
   Serial.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
   Serial.println(payload);

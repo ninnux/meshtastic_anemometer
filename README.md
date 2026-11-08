@@ -520,7 +520,7 @@ AT+CCOAPACTION                             deve rispondere +CCOAPACTION: 0,1
 AT+CCOAPTERM
 ```
 
-Il payload `7b7d` è un JSON vuoto, quindi il ricevitore lo scarta. Se nel suo log compare `scartato da ...: firma mancante`, l'invio funziona. Sul modem provato `AT+CCOAPPARA` risponde `ERROR` con `MID` oltre 32767, quindi il firmware lo tiene a 15 bit.
+Il payload `7b7d` è un JSON vuoto, quindi il ricevitore lo scarta. Se nel suo log compare `scartato da ...: firma mancante`, l'invio funziona. Sul modem provato `AT+CCOAPPARA` risponde `ERROR` con `MID` oltre 9999, quindi il driver lo riporta sotto 10000.
 
 Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Manual V1.05*, capitolo 18 per il CoAP, che non è incluso nel repository. Restano da verificare questi punti:
 
