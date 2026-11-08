@@ -13,6 +13,8 @@
 #define CFUN_TIMEOUT_MS    10000UL   // massimo indicato dal manuale
 #define ACTION_TIMEOUT_MS  10000UL
 #define NTP_TIMEOUT_MS     30000UL
+#define NTP_ATTEMPTS       3
+#define NTP_RETRY_MS       3000UL    // appena uscito dal PSM il DNS puo' non essere pronto
 #define COAP_ACK_MS        100000UL  // comprende le ritrasmissioni CON del modem
 #define POLL_MS            5
 
@@ -61,6 +63,13 @@ void Sim7080::handleUrc() {
   }
 }
 
+// Con SIM7080_TRACE ogni comando e ogni riga ricevuta vanno anche sulla USB
+#ifdef SIM7080_TRACE
+#define TRACE(prefix, text) do { Serial.print(prefix); Serial.println(text); } while (0)
+#else
+#define TRACE(prefix, text) do {} while (0)
+#endif
+
 void Sim7080::flushInput() {
   _lineLen = 0;
   while (_at.available()) {
@@ -68,6 +77,7 @@ void Sim7080::flushInput() {
     if (c == '\n') {
       _line[_lineLen] = '\0';
       _lineLen = 0;
+      if (_line[0]) TRACE("<< ", _line);
       handleUrc();
     } else if (c != '\r' && c != ' ' && _lineLen < sizeof(_line) - 1) {
       _line[_lineLen++] = c;
@@ -78,6 +88,7 @@ void Sim7080::flushInput() {
 
 void Sim7080::sendCmd(const char* cmd) {
   flushInput();  // scarta le risposte tardive del comando precedente
+  TRACE(">> ", cmd);
   _at.print(cmd);
   _at.print("\r");
 }
@@ -101,6 +112,7 @@ bool Sim7080::waitLine(const char* ok, const char* fail, uint32_t timeoutMs) {
     _line[_lineLen] = '\0';
     _lineLen = 0;
     if (_line[0] == '\0') continue;
+    TRACE("<< ", _line);
     if (lineStartsWith(ok)) return true;
     if (fail && lineStartsWith(fail)) return false;
     if (strstr(_line, "ERROR")) return false;
@@ -301,8 +313,15 @@ bool Sim7080::syncTime(const char* ntpServer, uint32_t& unixSeconds) {
   snprintf(cmd, sizeof(cmd), "AT+CNTP=\"%s\",0,0,0", ntpServer);
   if (!command(cmd)) return false;
 
-  sendCmd("AT+CNTP");
-  if (!waitLine("+CNTP: 1", "+CNTP:", NTP_TIMEOUT_MS)) return false;
+  // Nelle prove, al risveglio dal PSM, AT+CNTP risponde a volte 62 (errore DNS)
+  // e riesce al ciclo dopo: qualche tentativo evita di perdere il report.
+  bool synced = false;
+  for (int attempt = 0; attempt < NTP_ATTEMPTS && !synced; attempt++) {
+    if (attempt > 0) delay(NTP_RETRY_MS);
+    sendCmd("AT+CNTP");
+    synced = waitLine("+CNTP: 1", "+CNTP:", NTP_TIMEOUT_MS);
+  }
+  if (!synced) return false;
 
   sendCmd("AT+CCLK?");
   if (!waitLine("+CCLK:", "OK", 2000)) return false;

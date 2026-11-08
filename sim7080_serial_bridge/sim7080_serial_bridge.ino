@@ -23,6 +23,7 @@ void printHelp() {
   Serial.println();
   Serial.println("Convertitore seriale per SIM7080G. Scrivi un comando AT e premi Invio.");
   Serial.println("  #pwr   impulso su PWRKEY: accende il modem, oppure lo spegne se e' acceso");
+  Serial.println("  #baud N  velocita' verso il modem (es. #baud 9600), di base 115200");
   Serial.println("  #help  mostra questo aiuto");
   Serial.println("Se ogni comando appare due volte, invia ATE0 per togliere l'eco del modem.");
   Serial.println();
@@ -39,9 +40,24 @@ void pulsePwrkey() {
   Serial.println("Fatto.");
 }
 
+// Cambia la velocita' verso il modem: in autobaud il modem si adatta
+// al primo "AT", quindi a velocita' basse si vede se il segnale e' debole
+void setBaud(const char* arg) {
+  long baud = atol(arg);
+  if (baud < 1200 || baud > 921600) {
+    Serial.println("Uso: #baud 9600 (da 1200 a 921600)");
+    return;
+  }
+  Serial1.end();
+  Serial1.begin(baud);
+  Serial.print("Seriale modem a ");
+  Serial.println(baud);
+}
+
 void runLocalCommand(const char* command) {
-  if (strcmp(command, "#pwr") == 0) pulsePwrkey();
-  else                              printHelp();
+  if (strcmp(command, "#pwr") == 0)              pulsePwrkey();
+  else if (strncmp(command, "#baud ", 6) == 0)   setBaud(command + 6);
+  else                                           printHelp();
 }
 
 void setup() {

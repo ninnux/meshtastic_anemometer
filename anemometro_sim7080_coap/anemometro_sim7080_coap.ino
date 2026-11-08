@@ -40,7 +40,9 @@
 #define COAP_CONTENT_FORMAT_JSON 50
 
 // ── Invio ────────────────────────────────────────────────────
-#define REPORT_PERIOD_S 300
+#ifndef REPORT_PERIOD_S
+#define REPORT_PERIOD_S 300  // l'ambiente sim7080_dummy lo abbassa per le prove
+#endif
 #define FAILS_TO_RESET  3  // errori consecutivi prima dello spegnimento completo
 #define NTP_SERVER      "pool.ntp.org"
 
@@ -103,6 +105,10 @@ void setupBLE();
 void updateBLE();
 void startAdvertising();
 void stopAdvertising();
+#ifdef DUMMY_WIND
+uint32_t dummyRotations(uint32_t tick, float elapsedS);
+int  dummyVane(uint32_t tick);
+#endif
 
 // ============================================================
 // SETUP
@@ -179,6 +185,10 @@ void loop() {
   // vedi wind_clock.h, un salto di millis() rovinerebbe la media del periodo.
   float elapsedS = (float)(sampleTick - LastSampleTick) / WIND_CLOCK_TICK_HZ;
   LastSampleTick = sampleTick;
+
+#ifdef DUMMY_WIND
+  rot = dummyRotations(sampleTick, elapsedS);
+#endif
 
   WindSpeed = rot * KnPerPulsePerSecond / elapsedS;
   WindSpeedSum += WindSpeed * elapsedS;
@@ -280,7 +290,8 @@ bool sendReport(const WindReport& report) {
     return false;
   }
 
-  bool sent = modem.coapPost(messageId++, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
+  // Il SIM7080 risponde ERROR a CCOAPPARA con MID oltre 32767
+  bool sent = modem.coapPost(messageId++ & 0x7FFF, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
                              payload, COAP_CONFIRMABLE);
   Serial.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
   Serial.println(payload);
@@ -400,8 +411,40 @@ void isr_rotation() {
 // ============================================================
 // Direzione vento
 // ============================================================
+#ifdef DUMMY_WIND
+// ============================================================
+// Dati finti per provare modem e server senza sensori collegati.
+// Simulano gli impulsi e la banderuola, cosi' media, raffica e
+// direzione passano per gli stessi calcoli del vento vero.
+// ============================================================
+float dummyPhase(uint32_t tick, float periodS) {
+  return 2.0f * PI * fmodf((float)tick / WIND_CLOCK_TICK_HZ, periodS) / periodS;
+}
+
+// Vento fra 6 e 18 kn con ciclo di 10 minuti, piu' una raffica di qualche secondo ogni 2 minuti
+uint32_t dummyRotations(uint32_t tick, float elapsedS) {
+  static float carry = 0.0f;  // la parte frazionaria degli impulsi passa al campione dopo
+  float kn = 12.0f + 6.0f * sinf(dummyPhase(tick, 600.0f));
+  if (fmodf((float)tick / WIND_CLOCK_TICK_HZ, 120.0f) < 4.0f) kn += 8.0f;
+  float pulses = kn / KnPerPulsePerSecond * elapsedS + carry;
+  uint32_t whole = (uint32_t)pulses;
+  carry = pulses - whole;
+  return whole;
+}
+
+// Direzione che oscilla fra 180° e 260° con ciclo di 15 minuti
+int dummyVane(uint32_t tick) {
+  float dir = 220.0f + 40.0f * sinf(dummyPhase(tick, 900.0f));
+  return (int)lroundf(dir * 1023.0f / 360.0f);
+}
+#endif
+
 void getWindDirection() {
+#ifdef DUMMY_WIND
+  vaneValue        = dummyVane(xTaskGetTickCount());
+#else
   vaneValue        = analogRead(WindVanePin);
+#endif
   windDirection    = map(vaneValue, 0, 1023, 0, 360);
   windCalDirection = windDirection + VaneOffset;
 

@@ -243,6 +243,7 @@ pio run                        # firmware SIM7080 (ambiente predefinito)
 pio run -e bluetooth           # anemometro_bluetooth_stringaunica
 pio run -e compensated         # meshtastic_davis_anemometer_compensated, per XIAO Sense
 pio run -e bridge              # sim7080_serial_bridge, convertitore per provare il modem
+pio run -e sim7080_dummy       # SIM7080 con vento finto, invio ogni minuto e comandi AT sul monitor
 pio run -e sim7080 -t upload   # compila e carica
 pio device monitor             # monitor seriale a 115200 baud
 ```
@@ -300,7 +301,7 @@ S:12.3 M:10.8 X:15.1 D:225 SW
 
 `anemometro_sim7080_coap/` sostituisce il nodo Meshtastic con un modem SIM7080G. Il BLE resta come nel firmware base.
 
-> **Stato:** il driver del modem è stato provato su un SIM7080G vero via USB, compilato sul computer: rete, NTP, PSM e comandi di invio funzionano. Non è ancora stato provato il firmware completo sulla XIAO con UART e anemometro, né la ricezione di un messaggio da parte del server: vedi [Da verificare sull'hardware](#da-verificare-sullhardware).
+> **Stato:** il firmware completo gira sulla XIAO con il modem collegato ai pin: i messaggi firmati arrivano in NB-IoT al server `anemometro.ninux.org` e finiscono su InfluxDB. La prova è stata fatta con vento finto (`sim7080_dummy`), senza anemometro e banderuola: vedi [Da verificare sull'hardware](#da-verificare-sullhardware).
 
 #### Cosa misura e cosa invia
 
@@ -388,11 +389,14 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 | `D7` (RX) | TX del modem | |
 | `D1` | PWRKEY del modem | obbligatorio: serve ad accendere il modem e a risvegliarlo dal PSM |
 | `GND` | massa del modem e dell'alimentazione | massa in comune obbligatoria |
+| `5V` | 5 V dell'alimentazione esterna | sulla scheda provata è servito alimentare la XIAO dagli stessi 5 V del modem |
+
+**Scheda provata:** il modulo "universale" con serigrafia SIM800/868, NB-SIM7080, CAT1-A7680X ha il connettore `DTR GND VDD PWRK UTX URX GND`. `VDD` è l'ingresso a 5 V, `URX`/`UTX` lavorano a 3,3 V e vanno direttamente a `D6`/`D7`, `PWRK` va a `D1` (`MODEM_PWRKEY_ACTIVE` `HIGH`), `DTR` resta libero. All'accensione il modem resta spento finché non riceve un impulso su PWRKEY. La UART ha funzionato solo con modem e XIAO alimentati dagli stessi 5 V esterni e massa comune; con il modem alimentato in altro modo si accendeva ma non rispondeva ad `AT`.
 
 **Prima di dare corrente:**
 
 - **Alimentazione del modem:** va alimentato a parte, non dal pin 3V3 della XIAO. In trasmissione ha picchi di centinaia di mA, e alcune fonti indicano fino a 2 A, quindi serve un'alimentazione adatta con un condensatore vicino al modulo. Controlla la tensione ammessa sul manuale della tua scheda.
-- **Livelli logici:** le linee del modulo SIM7080G dovrebbero lavorare a 1,8 V, mentre la XIAO lavora a 3,3 V. Molte schede hanno già il traslatore di livello: controlla la tua. Se non c'è, va aggiunto su RX, TX e PWRKEY.
+- **Livelli logici:** il modulo SIM7080G lavora a 1,8 V, mentre la XIAO lavora a 3,3 V. La scheda provata ha già il traslatore e accetta 3,3 V: controlla la tua. Se non c'è, va aggiunto su RX, TX e PWRKEY.
 - **PWRKEY:** `MODEM_PWRKEY_ACTIVE` è `HIGH` se la scheda ha un transistor sulla linea, `LOW` se il pin è collegato direttamente al modulo.
 - **Antenna e SIM:** non trasmettere senza antenna collegata, e inserisci la SIM a modem spento.
 - **Colori dei fili:** in un Davis 6410 dovrebbero essere nero per il contatto dell'anemometro, rosso per la massa, verde per il cursore e giallo per l'alimentazione della banderuola. Li cito a memoria: verificali con un multimetro. Il contatto dell'anemometro si chiude tra nero e rosso.
@@ -479,23 +483,25 @@ Se su macOS non trova gli header C++, aggiungi `-isysroot $(xcrun --show-sdk-pat
 
 #### Da verificare sull'hardware
 
-**Provato sul modem via USB:** registrazione in rete, connessione dati con `iot.1nce.net`, NTP, PSM concesso dalla rete, risveglio con PWRKEY e comandi di invio CoAP, accettati dal modem ma diretti a un indirizzo fittizio.
+**Provato con la XIAO:** registrazione in rete NB-IoT, connessione dati con `iot.1nce.net`, NTP, PSM concesso dalla rete, risveglio con PWRKEY e invio CoAP, con ricezione e firma verificate dal server e scrittura su InfluxDB.
 
-**Ancora da provare:** la ricezione di un messaggio sul server e il dialogo con la XIAO sui pin. Se qualcosa non va, sul monitor seriale vedi:
+Per provare modem e server senza sensori c'è l'ambiente `sim7080_dummy`: genera vento e direzione finti, invia ogni minuto e stampa sul monitor seriale ogni comando AT (`>>`) e ogni risposta (`<<`):
 
-| Controllo | Cosa vedi sul monitor seriale se fallisce |
-|---|---|
-| **Ora di rete** (`AT+CNTP`) | `Sincronizzazione NTP fallita` |
-| **Invio CoAP** (`AT+CCOAPPARA`) | `CoAP non inviato: {...}` |
+```bash
+pio run -e sim7080_dummy -t upload
+pio device monitor
+```
 
-Il firmware non stampa le risposte AT: `CoAP non inviato` compare anche per altri errori di invio. Per vedere l'`ERROR`, prova i comandi a mano usando la XIAO come convertitore. I collegamenti restano gli stessi:
+La traccia si attiva con `-DSIM7080_TRACE` e i dati finti con `-DDUMMY_WIND`, quindi si possono usare anche separatamente. Alla fine ricarica `pio run -e sim7080 -t upload`.
+
+Per provare i comandi a mano usa la XIAO come convertitore. I collegamenti restano gli stessi:
 
 ```bash
 pio run -e bridge -t upload
 pio device monitor
 ```
 
-Scrivi un comando e premi Invio. `#pwr` dà un impulso su PWRKEY, che accende il modem oppure lo spegne se è già acceso: prova prima `AT`, e usalo solo se non risponde. `#help` mostra l'aiuto. Con il firmware della stazione la XIAO non fa da convertitore, quindi alla fine ricarica `pio run -e sim7080 -t upload`.
+Scrivi un comando e premi Invio. `#pwr` dà un impulso su PWRKEY, che accende il modem oppure lo spegne se è già acceso: prova prima `AT`, e usalo solo se non risponde. Il primo `AT` dopo l'accensione va perso, perché il modem lo usa per riconoscere la velocità. `#baud 9600` cambia la velocità verso il modem, `#help` mostra l'aiuto. Con il firmware della stazione la XIAO non fa da convertitore, quindi alla fine ricarica `pio run -e sim7080 -t upload`.
 
 Questa è la sequenza da provare:
 
@@ -514,20 +520,20 @@ AT+CCOAPACTION                             deve rispondere +CCOAPACTION: 0,1
 AT+CCOAPTERM
 ```
 
-Il payload `7b7d` è un JSON vuoto, quindi il ricevitore lo scarta. Se nel suo log compare `scartato da ...: firma mancante`, l'invio funziona. Se `AT+CCOAPPARA` dà `ERROR`, prova prima i nomi dei parametri senza virgolette, come nell'esempio del manuale, e poi aggiorna `coapPost` in `sim7080.cpp`.
+Il payload `7b7d` è un JSON vuoto, quindi il ricevitore lo scarta. Se nel suo log compare `scartato da ...: firma mancante`, l'invio funziona. Sul modem provato `AT+CCOAPPARA` risponde `ERROR` con `MID` oltre 32767, quindi il firmware lo tiene a 15 bit.
 
 Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Manual V1.05*, capitolo 18 per il CoAP, che non è incluso nel repository. Restano da verificare questi punti:
 
-1. **Ricezione CoAP:** il modem accetta `AT+CCOAPPARA` e risponde `+CCOAPACTION: 0,<mid>`, ma questo dice solo che il pacchetto è partito. Il `<mid>` riportato (4097, 4098...) è diverso dal `MID` richiesto: va controllato sul server, ma non incide sull'autenticazione. Serve una prova con il server vero, che confermi anche come il modem passa `URI-PATH`, `CONTENT-FORMAT` e il payload.
-2. **UART sui pin:** finora i comandi sono passati dalla microUSB. Sulla scheda provata il modem accetta 3,3 V, ma non ha ancora risposto ad `AT` attraverso la XIAO: vanno controllati i fili TX e RX. Il firmware completo va provato sulla XIAO solo dopo.
-3. **Invio prima del sonno:** in NB-IoT il modem si addormenta circa 5 s dopo l'invio. La prova con il server deve confermare che il pacchetto parta prima.
+1. **Errore DNS di NTP:** al risveglio dal PSM `AT+CNTP` a volte risponde `+CNTP: 62`. Il firmware ora ritenta fino a 3 volte, ma i nuovi tentativi non sono ancora stati visti all'opera.
+2. **Invio durante il PSM:** su circa 8 cicli uno è andato perso: dopo una nuova registrazione in rete il modem è entrato in PSM durante `AT+CCOAPACTION`, senza risposta.
+3. **Segnale:** nella prova `AT+CSQ` dava 0–4, molto debole. Controlla antenna e posizione.
 4. **Conferme CON:** il firmware presume che la risposta del server arrivi come `+CCOAPRECV`. Se non è così, con `COAP_CONFIRMABLE` ogni invio risulterebbe fallito.
 5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare un solo impulso, anche con il debounce a 40 ms.
 6. **Taratura:** la formula vale per un vero Davis. Un confronto con un anemometro portatile è il controllo più affidabile.
 7. **Consumo:** misura la corrente del modem per vedere quanto consuma davvero nelle varie fasi.
 8. **PWRKEY collegato direttamente:** con un filo tra `D1` e PWRKEY, a seconda della scheda, il modem può accendersi da solo e riavviarsi ogni 16 s circa. Se succede, controlla `MODEM_PWRKEY_ACTIVE`.
 
-Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, ma per verificare il PSM serve un periodo più lungo.
+Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, oppure usa l'ambiente `sim7080_dummy`, ma per verificare il PSM serve un periodo più lungo.
 
 ## Ricevitore in Go e deploy su Devuan
 

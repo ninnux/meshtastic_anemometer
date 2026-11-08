@@ -40,6 +40,7 @@ public:
   bool answersPowerOff = true;
   bool coapOk = true;
   std::string ntpResult = "+CNTP: 1";
+  int ntpFailures = 0;  // risposte con errore DNS prima di ntpResult
   std::string clock = "\"26/11/05,11:53:02+00\"";
   bool raiSupported = true;
   int ignoreCommands = 0;
@@ -161,7 +162,9 @@ private:
     } else if (c.rfind("AT+CCOAPPARA=", 0) == 0) {
       rx += coapOk ? "\r\nOK\r\n" : "\r\nERROR\r\n";
     } else if (c == "AT+CNTP") {
-      rx += "\r\nOK\r\n\r\n" + ntpResult + "\r\n";
+      std::string result = ntpResult;
+      if (ntpFailures > 0) { ntpFailures--; result = "+CNTP: 62"; }
+      rx += "\r\nOK\r\n\r\n" + result + "\r\n";
     } else if (c == "AT+CCLK?") {
       rx += "\r\n+CCLK: " + clock + "\r\n\r\nOK\r\n";
     } else if (c.rfind("AT+CRAI=", 0) == 0) {
@@ -830,7 +833,18 @@ static void testSyncTimeNtpError() {
   uint32_t t = 0;
   CHECK(!modem.syncTime("pool.ntp.org", t));
   CHECK(m.count("AT+CCLK?") == 0);  // l'orologio non e' stato aggiornato
-  CHECK(fakeMillis < 5000);         // riconosce l'errore senza attendere il timeout
+  CHECK(m.count("AT+CNTP") - m.count("AT+CNTP=") == 3);  // tutti i tentativi
+  CHECK(fakeMillis < 10000);        // riconosce l'errore senza attendere il timeout
+}
+
+static void testSyncTimeRetriesDns() {
+  FakeModem m; reset(m);
+  m.ntpFailures = 1;  // come al risveglio dal PSM: il primo tentativo non risolve il nome
+  Sim7080 modem(m, 1, HIGH);
+  uint32_t t = 0;
+  CHECK(modem.syncTime("pool.ntp.org", t));
+  CHECK(t == 1793879582UL);
+  CHECK(m.count("AT+CNTP") - m.count("AT+CNTP=") == 2);
 }
 
 static void testSyncTimeBadClock() {
@@ -947,6 +961,7 @@ int main() {
   testTimeoutAcrossTickWrap();
   testSyncTime();
   testSyncTimeNtpError();
+  testSyncTimeRetriesDns();
   testSyncTimeBadClock();
   testGustNeedsFullWindow();
   testGustSlides();
