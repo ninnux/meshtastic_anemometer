@@ -5,6 +5,7 @@
 #include <string.h>
 #include <string>
 
+#define FAKE_ARDUINO
 #define HIGH 1
 #define LOW 0
 #define INPUT 0
@@ -32,6 +33,8 @@ public:
 };
 
 struct FakeSerial {
+  void print(const char*) {}
   void println(const char*) {}
 };
 extern FakeSerial Serial;
+extern FakeSerial Log;

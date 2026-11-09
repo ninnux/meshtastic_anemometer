@@ -11,6 +11,7 @@
 #include <bluefruit.h>
 #include <math.h>
 #include "secrets.h"  // creato da secrets.example.h, non e' nel repository
+#include "log_serial.h"
 #include "sim7080.h"
 #include "wind_clock.h"
 #include "wind_report.h"
@@ -60,6 +61,7 @@ bool     isAdvertising = false;
 
 // ── SoftwareTimer ────────────────────────────────────────────
 SoftwareTimer sampleTimer;
+LogSerial     Log;  // vedi log_serial.h: mai Serial.print, bloccherebbe il firmware
 
 // ── Variabili anemometro ─────────────────────────────────────
 volatile bool     IsReportRequired      = false;
@@ -146,7 +148,7 @@ void setup() {
   sampleTimer.begin(500, isr_timer_cb);
   sampleTimer.start();
 
-  Serial.println("Sistema avviato.");
+  Log.println("Sistema avviato.");
 }
 
 // ============================================================
@@ -206,12 +208,12 @@ void loop() {
   WindDirSinSum += sinf(dirRad);
   WindDirCosSum += cosf(dirRad);
 
-  Serial.print("WindSpeed (kn): ");  Serial.print(WindSpeed);
-  Serial.print(" Mean (kn): ");      Serial.print(WindSpeedMean);
-  Serial.print(" Max (kn): ");       Serial.print(WindSpeedMax);
-  Serial.print(" | Dir: ");          Serial.print(windCalDirection);
-  Serial.print("° (");               Serial.print(windCompassDirection);
-  Serial.println(")");
+  Log.print("WindSpeed (kn): ");  Log.print(WindSpeed);
+  Log.print(" Mean (kn): ");      Log.print(WindSpeedMean);
+  Log.print(" Max (kn): ");       Log.print(WindSpeedMax);
+  Log.print(" | Dir: ");          Log.print(windCalDirection);
+  Log.print("° (");               Log.print(windCompassDirection);
+  Log.println(")");
 
   // ── Aggiorna BLE ──────────────────────────────────────────
   if (IsBLEUpdateRequired) {
@@ -286,14 +288,14 @@ bool sendReport(const WindReport& report) {
   char payload[128];
   if (!formatSignedWindPayload(payload, sizeof(payload), NODE_NAME, report,
                                windClock.timestamp(report.closedTick), STATION_KEY)) {
-    Serial.println("Report troppo lungo");
+    Log.println("Report troppo lungo");
     return false;
   }
 
   bool sent = modem.coapPost(messageId++, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
                              payload, COAP_CONFIRMABLE);
-  Serial.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
-  Serial.println(payload);
+  Log.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
+  Log.println(payload);
   return sent;
 }
 
@@ -307,7 +309,7 @@ bool syncClockIfNeeded() {
     windClock.sync(unixSeconds, xTaskGetTickCount());
     return true;
   }
-  Serial.println("Sincronizzazione NTP fallita");
+  Log.println("Sincronizzazione NTP fallita");
   return windClock.usable(xTaskGetTickCount());
 }
 
@@ -334,7 +336,7 @@ void setupBLE() {
   Bluefruit.Advertising.setInterval(160, 3200);
   Bluefruit.Advertising.setFastTimeout(30);
 
-  Serial.println("BLE configurato, radio spento.");
+  Log.println("BLE configurato, radio spento.");
 }
 
 // ============================================================
@@ -344,7 +346,7 @@ void startAdvertising() {
   if (!isAdvertising) {
     Bluefruit.Advertising.start(0);
     isAdvertising = true;
-    Serial.println("BLE advertising ON");
+    Log.println("BLE advertising ON");
   }
 }
 
@@ -355,7 +357,7 @@ void stopAdvertising() {
   if (isAdvertising && !Bluefruit.connected()) {
     Bluefruit.Advertising.stop();
     isAdvertising = false;
-    Serial.println("BLE advertising OFF");
+    Log.println("BLE advertising OFF");
   }
 }
 

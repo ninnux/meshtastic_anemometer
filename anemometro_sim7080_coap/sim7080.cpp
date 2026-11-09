@@ -1,5 +1,6 @@
 #include "sim7080.h"
 #include "wind_clock.h"
+#include "log_serial.h"
 
 // Durata dell'impulso e attesa da verificare sul Hardware Design del modulo
 #define PWRKEY_PULSE_MS    1200UL
@@ -66,7 +67,7 @@ void Sim7080::handleUrc() {
 
 // Con SIM7080_TRACE ogni comando e ogni riga ricevuta vanno anche sulla USB
 #ifdef SIM7080_TRACE
-#define TRACE(prefix, text) do { Serial.print(prefix); Serial.println(text); } while (0)
+#define TRACE(prefix, text) do { Log.print(prefix); Log.println(text); } while (0)
 #else
 #define TRACE(prefix, text) do {} while (0)
 #endif
@@ -152,7 +153,7 @@ bool Sim7080::waitAlive(uint32_t timeoutMs) {
 }
 
 void Sim7080::pulsePwrkey() {
-  Serial.println("SIM7080: impulso PWRKEY");
+  Log.println("SIM7080: impulso PWRKEY");
   pinMode(_pwrkeyPin, OUTPUT);
   digitalWrite(_pwrkeyPin, _pwrkeyActive);
   delay(PWRKEY_PULSE_MS);
@@ -163,7 +164,7 @@ void Sim7080::pulsePwrkey() {
 
 void Sim7080::standby() {
   _connected = false;
-  Serial.println("SIM7080: in standby, entrera' in PSM");
+  Log.println("SIM7080: in standby, entrera' in PSM");
 }
 
 void Sim7080::powerOff() {
@@ -174,7 +175,7 @@ void Sim7080::powerOff() {
     pulsePwrkey();
   }
   _connected = false;
-  Serial.println("SIM7080: spento");
+  Log.println("SIM7080: spento");
 }
 
 // ── Rete ─────────────────────────────────────────────────────
@@ -185,7 +186,7 @@ void Sim7080::configurePsm() {
   if (query("AT+CPSMS?", cmd)) return;
 
   snprintf(cmd, sizeof(cmd), "AT+CPSMS=1,,,\"%s\",\"%s\"", PSM_PERIODIC_TAU, PSM_ACTIVE_TIME);
-  if (!command(cmd)) Serial.println("SIM7080: configurazione PSM fallita");
+  if (!command(cmd)) Log.println("SIM7080: configurazione PSM fallita");
 }
 
 bool Sim7080::configureNetwork(const char* apn, const char* networkMode) {
@@ -264,28 +265,28 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port, const ch
   if (!isAlive()) {
     pulsePwrkey();
     if (!waitAlive(BOOT_TIMEOUT_MS)) {
-      Serial.println("SIM7080: nessuna risposta AT");
+      Log.println("SIM7080: nessuna risposta AT");
       return false;
     }
   }
   command("ATE0");
 
   if (!configureNetwork(apn, networkMode)) {
-    Serial.println("SIM7080: configurazione rete fallita");
+    Log.println("SIM7080: configurazione rete fallita");
     return false;
   }
   if (!waitSimReady(SIM_TIMEOUT_MS)) {
-    Serial.println("SIM7080: SIM non pronta");
+    Log.println("SIM7080: SIM non pronta");
     return false;
   }
   if (!waitAttach(ATTACH_TIMEOUT_MS)) {
-    Serial.println("SIM7080: rete non disponibile");
+    Log.println("SIM7080: rete non disponibile");
     return false;
   }
   // Solo ora: appena sveglio il modem risponde ad AT ma AT+CPSMS? da' ERROR
   configurePsm();
   if (!activatePdp(apn)) {
-    Serial.println("SIM7080: attivazione PDP fallita");
+    Log.println("SIM7080: attivazione PDP fallita");
     return false;
   }
 
@@ -294,14 +295,14 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port, const ch
   char cmd[96];
   snprintf(cmd, sizeof(cmd), "AT+CCOAPURL=\"coap://%s:%u\"", host, port);
   if (!command("AT+CCOAPINIT") || !command(cmd)) {
-    Serial.println("SIM7080: inizializzazione CoAP fallita");
+    Log.println("SIM7080: inizializzazione CoAP fallita");
     return false;
   }
 
   // Il quarto valore e' l'active time assegnato dalla rete: 0 = PSM non supportato
-  if (query("AT+CPSMRDP", "+CPSMRDP:")) Serial.println(_line);
+  if (query("AT+CPSMRDP", "+CPSMRDP:")) Log.println(_line);
 
-  Serial.println("SIM7080: connesso");
+  Log.println("SIM7080: connesso");
   _connected = true;
   return true;
 }

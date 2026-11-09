@@ -17,6 +17,7 @@ uint32_t fakeTickOffset = 0;
 int pwrkeyPulses = 0;
 uint8_t pwrkeyLevel = LOW;
 FakeSerial Serial;
+FakeSerial Log;
 
 class FakeModem;
 static FakeModem* activeModem = nullptr;
