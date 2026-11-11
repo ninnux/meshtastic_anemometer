@@ -116,7 +116,7 @@ Apri la porta UDP 5683 sul firewall del server: lo script di deploy non lo tocca
 
 ### 8. Verifica
 
-Il primo messaggio parte 5 minuti dopo l'avvio della stazione.
+Il primo messaggio parte 1 minuto dopo l'avvio della stazione, poi uno ogni 5 minuti.
 
 ```bash
 pio device monitor                                                # sulla stazione
@@ -206,7 +206,7 @@ Se il servizio non parte, la causa è nell'ultima riga di `/var/log/anemometer-c
 
 **5. Verifica**
 
-Il primo messaggio parte 5 minuti dopo l'avvio del nodo. Sul server deve comparire:
+Il primo messaggio parte 1 minuto dopo l'avvio del nodo. Sul server deve comparire:
 
 ```
 ricevuto nuovo_nodo: media ...
@@ -417,7 +417,6 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 | `DebounceMs` | `40` | Debounce del contatto reed |
 | `MODEM_PWRKEY_PIN` | `1` | Pin collegato a PWRKEY |
 | `MODEM_PWRKEY_ACTIVE` | `HIGH` | `HIGH` con transistor sulla scheda del modem, `LOW` se PWRKEY è collegato direttamente |
-| `FAILS_TO_RESET` | `3` | Errori consecutivi prima dello spegnimento completo |
 | `VaneOffset` | `0` | Offset in gradi per allineare la banderuola al nord |
 
 Nel driver `sim7080.cpp` si trovano i valori PSM richiesti alla rete (`PSM_PERIODIC_TAU`, `PSM_ACTIVE_TIME`) e la durata dell'impulso (`PWRKEY_PULSE_MS`).
@@ -442,7 +441,8 @@ Altri dettagli:
 - **Segnale dopo il risveglio:** appena sveglio `AT+CSQ` riporta `99,99` anche se la radio funziona: nelle prove NTP ha risposto proprio in quel momento. Non va usato per decidere se inviare.
 - **Risveglio:** nelle prove la connessione è pronta circa 10 s dopo l'impulso. Dopo il PSM `AT+CGATT?` può riportare `1` prima che la radio sia pronta, quindi il firmware ripete `AT+CNACT` finché la connessione non è attiva.
 - **Quando dorme:** il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
-- **Errori:** dopo `FAILS_TO_RESET` errori consecutivi il modem viene spento con `AT+CPOWD=1` e riacceso al report successivo. È l'unico caso di spegnimento completo.
+- **Errori:** il modem non viene mai spento. Se un ciclo fallisce resta in standby e il ciclo successivo riprova. Se dopo 90 s non trova la rete, la radio viene riavviata con `AT+CFUN=0` e `AT+CFUN=1` e la ricerca riparte da capo.
+- **Watchdog:** se un ciclo del modem dura più di 10 minuti, o il campionamento si ferma, la XIAO si riavvia. All'avvio il monitor seriale lo segnala.
 - **Campionamento:** il modem gira in un task FreeRTOS separato, quindi i comandi AT non interrompono le letture.
 - **Dati persi:** non c'è un buffer. Se la rete manca o il modem è occupato, in coda resta solo l'ultimo report e gli altri vanno persi; ogni report perso vale 5 minuti di dati.
 - **Consegna:** con NON un server spento non viene rilevato. Con `COAP_CONFIRMABLE` sì, ma va prima verificato sul modem come arrivano le conferme.
@@ -533,7 +533,7 @@ Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Ma
 7. **Consumo:** misura la corrente del modem per vedere quanto consuma davvero nelle varie fasi.
 8. **PWRKEY collegato direttamente:** con un filo tra `D1` e PWRKEY, a seconda della scheda, il modem può accendersi da solo e riavviarsi ogni 16 s circa. Se succede, controlla `MODEM_PWRKEY_ACTIVE`.
 
-Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 5 minuti dopo l'avvio: per una prova veloce abbassa `REPORT_PERIOD_S`, ad esempio a 30, oppure usa l'ambiente `sim7080_dummy`, ma per verificare il PSM serve un periodo più lungo.
+Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP inviato: {...}` e infine `SIM7080: in standby, entrera' in PSM`. Il primo messaggio parte 1 minuto dopo l'avvio, con la media di quel minuto, così il modem va subito in PSM; poi uno ogni `REPORT_PERIOD_S`. Per una prova più fitta usa l'ambiente `sim7080_dummy`, ma per verificare il PSM serve un periodo più lungo.
 
 ## Ricevitore in Go e deploy su Devuan
 

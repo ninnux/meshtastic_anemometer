@@ -8,6 +8,7 @@
 #define POWER_OFF_MS       10000UL
 #define SIM_TIMEOUT_MS     10000UL
 #define ATTACH_TIMEOUT_MS  180000UL  // il primo attach Cat-M/NB-IoT e' lento
+#define ATTACH_RESTART_MS  90000UL   // senza rete a meta' attesa riavvia la radio
 #define PDP_TIMEOUT_MS     30000UL
 #define PDP_RESPONSE_MS    10000UL
 #define PDP_RETRY_MS       500UL
@@ -18,6 +19,7 @@
 #define NTP_RETRY_MS       3000UL    // appena uscito dal PSM il DNS puo' non essere pronto
 #define COAP_ACK_MS        100000UL  // comprende le ritrasmissioni CON del modem
 #define POLL_MS            5
+#define FLUSH_MAX_BYTES    2048  // un modem che trasmette senza sosta non blocca il task
 
 #define COAP_CODE_POST     2
 #define COAP_MID_LIMIT     10000  // il modem risponde ERROR a CCOAPPARA con MID oltre 9999
@@ -74,7 +76,7 @@ void Sim7080::handleUrc() {
 
 void Sim7080::flushInput() {
   _lineLen = 0;
-  while (_at.available()) {
+  for (size_t n = 0; n < FLUSH_MAX_BYTES && _at.available(); n++) {
     char c = _at.read();
     if (c == '\n') {
       _line[_lineLen] = '\0';
@@ -232,10 +234,29 @@ bool Sim7080::waitSimReady(uint32_t timeoutMs) {
   return false;
 }
 
+// A volte il modem resta a cercare la rete senza trovarla, mentre dopo un
+// riavvio si registra subito: a meta' attesa la radio viene spenta e
+// riaccesa, e la ricerca riparte da capo.
 bool Sim7080::waitAttach(uint32_t timeoutMs) {
   uint32_t start = xTaskGetTickCount();
-  while (xTaskGetTickCount() - start < ms2tick(timeoutMs)) {
+  bool restarted = false;
+  for (uint32_t poll = 0; xTaskGetTickCount() - start < ms2tick(timeoutMs); poll++) {
     if (query("AT+CGATT?", "+CGATT: 1")) return true;
+    if (!restarted && xTaskGetTickCount() - start >= ms2tick(ATTACH_RESTART_MS)) {
+      restarted = true;
+      Log.println("SIM7080: rete non trovata, riavvio la radio");
+      command("AT+CFUN=0", CFUN_TIMEOUT_MS);
+      command("AT+CFUN=1", CFUN_TIMEOUT_MS);
+      continue;
+    }
+#ifdef SIM7080_TRACE
+    // Ogni 10 s segnale e stato della registrazione: dicono se il modem non
+    // sente la rete (CSQ 99), la sta cercando (CEREG 2) o e' rifiutato (CEREG 3)
+    if (poll % 5 == 0) {
+      command("AT+CSQ");
+      command("AT+CEREG?");
+    }
+#endif
     delay(2000);
   }
   return false;

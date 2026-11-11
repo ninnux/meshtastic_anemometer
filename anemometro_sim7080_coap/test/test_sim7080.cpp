@@ -28,6 +28,7 @@ public:
   uint32_t bootAt = 0;
   bool simReady = true;
   int attachAfterPolls = 0;
+  bool attachNeedsRadioRestart = false;  // si registra solo dopo CFUN=0 e CFUN=1
   bool pdpActive = false;
   bool apnStored = false;
   int bootingCommands = 0;  // appena sveglio: AT e' ok, il resto no
@@ -114,7 +115,11 @@ private:
     if (c == "AT+CPIN?") {
       rx += simReady ? "\r\n+CPIN: READY\r\n\r\nOK\r\n" : "\r\n+CPIN: NOT READY\r\n\r\nOK\r\n";
     } else if (c == "AT+CGATT?") {
-      rx += attachAfterPolls-- <= 0 ? "\r\n+CGATT: 1\r\n\r\nOK\r\n" : "\r\n+CGATT: 0\r\n\r\nOK\r\n";
+      bool attached = attachAfterPolls-- <= 0 && !attachNeedsRadioRestart;
+      rx += attached ? "\r\n+CGATT: 1\r\n\r\nOK\r\n" : "\r\n+CGATT: 0\r\n\r\nOK\r\n";
+    } else if (c == "AT+CFUN=1") {
+      attachNeedsRadioRestart = false;
+      rx += "\r\nOK\r\n";
     } else if (c == "AT+CMNB?") {
       rx += "\r\n+CMNB: " + networkMode + "\r\n\r\nOK\r\n";
     } else if (c.rfind("AT+CMNB=", 0) == 0) {
@@ -374,6 +379,32 @@ static void testNoNetworkTimesOut() {
   Sim7080 modem(m, 1, HIGH);
   CHECK(!modem.connect(APN, HOST, 5683));
   CHECK(fakeMillis >= 180000 && fakeMillis < 200000);
+}
+
+// Bloccato nella ricerca della rete: a meta' attesa la radio viene riavviata
+static void testRadioRestartedWhenAttachStuck() {
+  FakeModem m; reset(m);
+  m.apnStored = true;  // nessun CFUN in configurazione
+  m.networkMode = "2";
+  m.nbBands = "3,8,20";
+  m.attachNeedsRadioRestart = true;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CFUN=0") == 1);
+  CHECK(m.count("AT+CFUN=1") == 1);
+  CHECK(fakeMillis >= 90000 && fakeMillis < 120000);
+}
+
+// Senza rete la radio viene riavviata una volta sola
+static void testRadioRestartedOnce() {
+  FakeModem m; reset(m);
+  m.apnStored = true;  // nessun CFUN in configurazione
+  m.networkMode = "2";
+  m.nbBands = "3,8,20";
+  m.attachAfterPolls = 1000000;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(!modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CFUN=0") == 1);
 }
 
 static void testPostParaErrorMarksDisconnected() {
@@ -939,6 +970,8 @@ int main() {
   testModemDead();
   testSimNotReady();
   testNoNetworkTimesOut();
+  testRadioRestartedWhenAttachStuck();
+  testRadioRestartedOnce();
   testPostParaErrorMarksDisconnected();
   testActionErrorMarksDisconnected();
   testOversizedPayloadRejected();

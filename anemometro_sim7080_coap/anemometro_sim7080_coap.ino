@@ -44,7 +44,15 @@
 #ifndef REPORT_PERIOD_S
 #define REPORT_PERIOD_S 300  // l'ambiente sim7080_dummy lo abbassa per le prove
 #endif
-#define FAILS_TO_RESET  3  // errori consecutivi prima dello spegnimento completo
+// Il primo report parte presto: il modem acceso va subito in PSM invece di
+// restare sveglio per un periodo intero, e all'accensione si vede che funziona
+#define FIRST_REPORT_S  (REPORT_PERIOD_S < 60 ? REPORT_PERIOD_S : 60)
+
+// ── Watchdog ─────────────────────────────────────────────────
+// Il loop lo ricarica ogni secondo, ma smette se un ciclo del modem dura
+// troppo: la XIAO si riavvia invece di restare ferma per sempre.
+#define WDT_TIMEOUT_S      120  // piu' lungo di un caricamento del firmware via USB
+#define MODEM_CYCLE_MAX_S  600  // nel caso peggiore un ciclo dura circa 6 minuti
 #define NTP_SERVER      "pool.ntp.org"
 
 // ── BLE ──────────────────────────────────────────────────────
@@ -67,6 +75,9 @@ LogSerial     Log;  // vedi log_serial.h: mai Serial.print, bloccherebbe il firm
 volatile bool     IsReportRequired      = false;
 volatile bool     IsBLEUpdateRequired   = false;
 volatile uint16_t TimerCount            = 0;
+volatile bool     IsFirstReportSent     = false;
+volatile bool     IsModemBusy           = false;
+volatile uint32_t ModemBusySinceTick    = 0;
 volatile uint32_t Rotations             = 0;
 volatile uint32_t ContactBounceTick     = 0;
 
@@ -101,6 +112,9 @@ void getWindDirection();
 int  meanWindDirection();
 void queueReport();
 void modemLoop();
+void runModemCycle(const WindReport& report);
+void startWatchdog();
+void feedWatchdog();
 bool sendReport(const WindReport& report);
 bool syncClockIfNeeded();
 void setupBLE();
@@ -116,12 +130,18 @@ int  dummyVane(uint32_t tick);
 // SETUP
 // ============================================================
 void setup() {
+  // Va letto prima di Bluefruit.begin: poi la SoftDevice protegge NRF_POWER
+  bool watchdogReset = NRF_POWER->RESETREAS & POWER_RESETREAS_DOG_Msk;
+  NRF_POWER->RESETREAS = 0xFFFFFFFF;  // si azzera scrivendo 1
+  startWatchdog();
+
   Bluefruit.autoConnLed(false);
   Bluefruit.setConnLedInterval(0);
 
   Serial.begin(115200);
   uint32_t t = millis();
   while (!Serial && (millis() - t) < 3000);
+  if (watchdogReset) Log.println("Riavvio dal watchdog: un ciclo del modem si era bloccato");
 
   modem.begin();
 
@@ -172,6 +192,7 @@ void loop() {
   // In attesa il task e' sospeso e FreeRTOS mette in sleep la CPU
   // quando anche il task del modem e' fermo.
   xSemaphoreTake(sampleSemaphore, portMAX_DELAY);
+  feedWatchdog();
 
   // ── Calcolo vento ─────────────────────────────────────────
   getWindDirection();
@@ -255,29 +276,47 @@ int meanWindDirection() {
 // ============================================================
 // A ogni report il modem viene svegliato, usato e lasciato tornare in PSM
 void modemLoop() {
-  static uint8_t failures = 0;
-
   WindReport report;
   if (xQueueReceive(reportQueue, &report, portMAX_DELAY) != pdTRUE) return;
 
+  ModemBusySinceTick = xTaskGetTickCount();
+  IsModemBusy = true;
+  runModemCycle(report);
+  IsModemBusy = false;
+}
+
+// Il modem non viene mai spento: se il ciclo fallisce resta in standby e
+// il ciclo successivo riprova a collegarsi
+void runModemCycle(const WindReport& report) {
   Serial1.begin(MODEM_BAUD_RATE);
 
-  bool sent = false;
-  if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT, MODEM_NETWORK_MODE) && syncClockIfNeeded()) {
-    sent = sendReport(report);
-  }
-
-  if (sent) {
-    failures = 0;
-  } else if (++failures >= FAILS_TO_RESET) {
-    failures = 0;
-    modem.powerOff();
-    Serial1.end();
-    return;
+  if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT, MODEM_NETWORK_MODE) &&
+      syncClockIfNeeded()) {
+    sendReport(report);
   }
 
   modem.standby();
   Serial1.end();  // la UART attiva impedisce alla CPU il sonno piu' profondo
+}
+
+// ============================================================
+// Watchdog
+// ============================================================
+void startWatchdog() {
+  // Una volta avviato si ferma solo con un reset: riscriverlo non ha effetto
+  NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
+                    (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV  = WDT_TIMEOUT_S * 32768UL;  // clock a 32,768 kHz
+  NRF_WDT->RREN = WDT_RREN_RR0_Msk;
+  NRF_WDT->TASKS_START = 1;
+}
+
+void feedWatchdog() {
+  if (IsModemBusy &&
+      xTaskGetTickCount() - ModemBusySinceTick > ms2tick(MODEM_CYCLE_MAX_S * 1000UL)) {
+    return;  // ciclo del modem bloccato: il watchdog riavviera' la XIAO
+  }
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 }
 
 bool sendReport(const WindReport& report) {
@@ -385,8 +424,10 @@ void isr_timer_cb(TimerHandle_t xTimerID) {
   TimerCount++;
 
   // report ogni REPORT_PERIOD_S (2 tick al secondo), impostato prima di risvegliare il loop
-  if (TimerCount >= REPORT_PERIOD_S * 2) {
-    IsReportRequired = true;
+  uint16_t period = IsFirstReportSent ? REPORT_PERIOD_S : FIRST_REPORT_S;
+  if (TimerCount >= period * 2) {
+    IsReportRequired  = true;
+    IsFirstReportSent = true;
     TimerCount = 0;
   }
 
