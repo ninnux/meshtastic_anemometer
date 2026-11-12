@@ -435,7 +435,7 @@ A ogni invio il firmware:
 
 Altri dettagli:
 
-- **Valori richiesti alla rete:** active time di 2 s e TAU periodico di 2 ore. La rete può assegnarne altri: il log mostra la riga `+CPSMRDP:`, dove il quarto valore è l'active time assegnato e 0 significa PSM non supportato. In quel caso il modem resta sveglio e funziona comunque.
+- **Valori richiesti alla rete:** active time di 6 s e TAU periodico di 2 ore. Con 2 s a volte il modem andava in PSM tra il comando di invio e la trasmissione, e il messaggio si perdeva. La rete può assegnarne altri: il log mostra la riga `+CPSMRDP:`, dove il quarto valore è l'active time assegnato e 0 significa PSM non supportato. In quel caso il modem resta sveglio e funziona comunque.
 - **Tecnologia e bande:** il firmware imposta NB-IoT (`MODEM_NETWORK_MODE`) e le bande 3, 8 e 20, se diverse da quelle salvate nel modem. Il modem provato aveva NB-IoT solo sulla banda 8, e non trovava rete: Vodafone Italia usa NB-IoT sulla banda 20.
 - **Perché NB-IoT:** nelle prove su Vodafone con active time richiesto di 2 s, in NB-IoT la rete ha assegnato 2 s e il modem si è addormentato circa 5 s dopo l'invio. In Cat-M ha assegnato 120 s e il modem si è addormentato dopo circa 130 s. Prima di installare una stazione, controlla sul posto che NB-IoT ci sia, con `AT+CSQ` e `AT+CGATT?`. Altrimenti imposta `"3"`.
 - **Segnale dopo il risveglio:** appena sveglio `AT+CSQ` riporta `99,99` anche se la radio funziona: nelle prove NTP ha risposto proprio in quel momento. Non va usato per decidere se inviare.

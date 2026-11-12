@@ -36,7 +36,7 @@
 // Il modem normalizza il valore che riceve e AT+CPSMS? riporta questo: con un'altra
 // scrittura della stessa durata verrebbe riscritto in flash a ogni risveglio.
 #define PSM_PERIODIC_TAU   "00001100"  // unita' 10 min x 12 = 2 ore
-#define PSM_ACTIVE_TIME    "00000001"  // unita' 2 s x 1 = 2 s
+#define PSM_ACTIVE_TIME    "00000011"  // unita' 2 s x 3 = 6 s: con 2 s il modem si addormentava prima di spedire
 
 Sim7080::Sim7080(Stream& at, uint8_t pwrkeyPin, uint8_t pwrkeyActive)
   : _at(at), _pwrkeyPin(pwrkeyPin), _pwrkeyActive(pwrkeyActive) {}

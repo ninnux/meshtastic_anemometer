@@ -286,7 +286,7 @@ static void testNothingRewrittenWhileBooting() {
   m.apnStored = true;
   m.networkMode = "2";
   m.nbBands = "3,8,20";
-  m.storedPsm = "1,,,\"00001100\",\"00000001\"";
+  m.storedPsm = "1,,,\"00001100\",\"00000011\"";
   m.bootingCommands = 3;
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
@@ -341,7 +341,7 @@ static void testPdpGivesUp() {
 // Il modem normalizza il TAU: con il valore giusto non va riscritto a ogni risveglio
 static void testStoredPsmValueMatchesRealModem() {
   FakeModem m; reset(m);
-  m.storedPsm = "1,,,\"00001100\",\"00000001\"";
+  m.storedPsm = "1,,,\"00001100\",\"00000011\"";
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
   CHECK(m.count("AT+CPSMS=") == 0);
@@ -574,7 +574,7 @@ static void testPowerOffWhenAlreadyOffNotPulsed() {
   CHECK(!m.powered);
 }
 
-static const char* PSM_CMD = "AT+CPSMS=1,,,\"00001100\",\"00000001\"";
+static const char* PSM_CMD = "AT+CPSMS=1,,,\"00001100\",\"00000011\"";
 
 static void testPsmRequestedOnce() {
   FakeModem m; reset(m);
