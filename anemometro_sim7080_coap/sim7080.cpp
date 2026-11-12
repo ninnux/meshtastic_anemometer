@@ -267,12 +267,17 @@ bool Sim7080::activatePdp(const char* apn) {
 
   char cmd[96];
   snprintf(cmd, sizeof(cmd), "AT+CNCFG=0,1,\"%s\"", apn);
-  if (!command(cmd)) return false;
 
   // Dopo il PSM AT+CGATT? riporta 1 anche se la radio non e' ancora pronta: i primi
   // tentativi falliscono con DEACTIVE, per circa 4 s nelle prove con il modem vero.
+  // Allo stesso modo AT+CNCFG a volte resta qualche secondo senza risposta.
+  bool configured = false;
   uint32_t start = xTaskGetTickCount();
   while (xTaskGetTickCount() - start < ms2tick(PDP_TIMEOUT_MS)) {
+    if (!configured && !(configured = command(cmd))) {
+      delay(PDP_RETRY_MS);
+      continue;
+    }
     sendCmd("AT+CNACT=0,1");
     if (waitLine("+APP PDP: 0,ACTIVE", "+APP PDP: 0,DEACTIVE", PDP_RESPONSE_MS)) return true;
     delay(PDP_RETRY_MS);
@@ -285,9 +290,14 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port, const ch
 
   if (!isAlive()) {
     pulsePwrkey();
+    // Se il modem era acceso ma non rispondeva, l'impulso l'ha spento
+    // (NORMAL POWER DOWN): un secondo impulso lo riaccende subito
     if (!waitAlive(BOOT_TIMEOUT_MS)) {
-      Log.println("SIM7080: nessuna risposta AT");
-      return false;
+      pulsePwrkey();
+      if (!waitAlive(BOOT_TIMEOUT_MS)) {
+        Log.println("SIM7080: nessuna risposta AT");
+        return false;
+      }
     }
   }
   command("ATE0");

@@ -46,6 +46,7 @@ public:
   std::string clock = "\"26/11/05,11:53:02+00\"";
   bool raiSupported = true;
   int ignoreCommands = 0;
+  int cncfgSilent = 0;  // AT+CNCFG senza risposta, come appena uscito dal PSM
   int actionError = 0;
   bool serverAnswers = true;
   std::string urcBeforeReply;
@@ -101,6 +102,7 @@ private:
     if (!powered || inPsm || fakeMillis < bootAt) return;
     if (ignoreCommands > 0) { ignoreCommands--; return; }
     commands.push_back(c);
+    if (cncfgSilent > 0 && c.rfind("AT+CNCFG=", 0) == 0) { cncfgSilent--; return; }
     rx += urcBeforeReply;
     if (bootingCommands > 0 && c != "AT" && c != "ATE0") {
       bootingCommands--;
@@ -309,6 +311,19 @@ static void testPdpRetriedUntilActive() {
   CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
 }
 
+// Appena uscito dal PSM il modem vero non ha risposto ad AT+CNCFG per qualche secondo
+static void testPdpConfigRetriedWhenSilent() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "2";
+  m.nbBands = "3,8,20";
+  m.cncfgSilent = 2;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CNCFG=") == 3);
+  CHECK(m.count("AT+CNACT=0,1") == 1);
+}
+
 static void testPdpGivesUp() {
   FakeModem m; reset(m);
   m.apnStored = true;
@@ -497,6 +512,16 @@ static void testSlowModemNotPulsed() {
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
   CHECK(pwrkeyPulses == 0);
+  CHECK(m.powered);
+}
+
+// Visto sul modem vero: acceso ma muto ai primi AT, l'impulso lo spegne
+static void testSilentModemPulsedBackOn() {
+  FakeModem m; reset(m);
+  m.ignoreCommands = 3;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(pwrkeyPulses == 2);
   CHECK(m.powered);
 }
 
@@ -860,7 +885,7 @@ static void testTimeoutAcrossTickWrap() {
   activeModem = nullptr;
   CHECK(!modem.connect(APN, HOST, 5683));
   uint32_t waited = fakeMillis - start;
-  CHECK(waited >= 20000 && waited < 30000);  // il timeout di avvio di 20 s, non zero
+  CHECK(waited >= 40000 && waited < 50000);  // due attese di avvio da 20 s, non zero
 }
 
 static void testSyncTime() {
@@ -963,6 +988,7 @@ int main() {
   testOnlyBandsDifferent();
   testNothingRewrittenWhileBooting();
   testPdpRetriedUntilActive();
+  testPdpConfigRetriedWhenSilent();
   testPdpGivesUp();
   testStoredPsmValueMatchesRealModem();
   testRunningModemNotPulsed();
@@ -981,6 +1007,7 @@ int main() {
   testUrcBetweenPostsDetected();
   testRaiRefusedStillSends();
   testSlowModemNotPulsed();
+  testSilentModemPulsedBackOn();
   testMessageIdWrapsBelowModemLimit();
   testPowerOffThenOnAgain();
   testPowerOffFallsBackToPwrkey();
