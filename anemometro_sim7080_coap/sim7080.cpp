@@ -287,9 +287,16 @@ bool Sim7080::activatePdp(const char* apn) {
   // tentativi falliscono con DEACTIVE, per circa 4 s nelle prove con il modem vero.
   // Allo stesso modo AT+CNCFG a volte resta qualche secondo senza risposta.
   bool configured = false;
+  uint8_t unanswered = 0;
   uint32_t start = xTaskGetTickCount();
   while (xTaskGetTickCount() - start < ms2tick(PDP_TIMEOUT_MS)) {
     if (!configured && !(configured = command(cmd))) {
+      // Visto sul modem vero: dopo SMS Ready ed EXITPSM a volte smette di
+      // rispondere del tutto e resta muto anche ai cicli successivi
+      if (++unanswered >= 2 && !isAlive()) {
+        _silent = true;
+        return false;
+      }
       delay(PDP_RETRY_MS);
       continue;
     }
@@ -300,8 +307,22 @@ bool Sim7080::activatePdp(const char* apn) {
   return false;
 }
 
+// Se il modem diventa muto a meta' connessione lo si spegne con un impulso,
+// e il secondo tentativo lo trova spento e lo riaccende.
 bool Sim7080::connect(const char* apn, const char* host, uint16_t port, const char* networkMode) {
+  if (connectOnce(apn, host, port, networkMode)) return true;
+  if (!_silent) return false;
+  Log.println("SIM7080: modem muto, lo riavvio");
+  // Durante lo spegnimento risponde ancora per un attimo: senza attesa
+  // sembrerebbe acceso e non verrebbe riacceso
+  pulsePwrkey();
+  delay(POWER_OFF_MS);
+  return connectOnce(apn, host, port, networkMode);
+}
+
+bool Sim7080::connectOnce(const char* apn, const char* host, uint16_t port, const char* networkMode) {
   _connected = false;
+  _silent = false;
 
   if (!isAlive()) {
     pulsePwrkey();

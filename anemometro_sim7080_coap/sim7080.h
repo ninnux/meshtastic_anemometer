@@ -52,11 +52,13 @@ private:
   bool waitSimReady(uint32_t timeoutMs);
   bool waitAttach(uint32_t timeoutMs);
   bool activatePdp(const char* apn);
+  bool connectOnce(const char* apn, const char* host, uint16_t port, const char* networkMode);
 
   Stream& _at;
   uint8_t _pwrkeyPin;
   uint8_t _pwrkeyActive;
   bool    _connected = false;
+  bool    _silent = false;  // smesso di rispondere durante la connessione
   char    _line[96];
   size_t  _lineLen   = 0;
 };

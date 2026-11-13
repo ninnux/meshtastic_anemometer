@@ -50,6 +50,10 @@ public:
   int garbledBandReads = 0;  // risposte ad AT+CBANDCFG? con caratteri persi
   bool cmnbWriteFails = false;
   bool radioOn = true;
+  std::string muteAt;  // da questo comando in poi non risponde finche' non si spegne
+  bool muted = false;
+  uint32_t shutdownMs = 0;  // dopo l'impulso risponde ancora per questo tempo
+  uint32_t offAt = 0;
   bool slowTail = false;  // le righe dopo la prima arrivano solo dopo un'attesa
   std::string late;
   int actionError = 0;
@@ -74,12 +78,19 @@ public:
     if (!keepsContextInPsm) pdpActive = false;
   }
   void togglePower() {
+    if (offAt && fakeMillis >= offAt) { offAt = 0; powered = false; pdpActive = false; }
     if (inPsm) {  // l'impulso risveglia, non spegne
       inPsm = false;
       bootAt = fakeMillis + 1000;
       return;
     }
+    if (powered && shutdownMs > 0) {  // si spegne, ma non subito
+      offAt = fakeMillis + shutdownMs;
+      muted = false;
+      return;
+    }
     powered = !powered;
+    muted = false;
     pdpActive = false;
     rx.clear();
     if (powered) bootAt = fakeMillis + 3000;
@@ -104,7 +115,10 @@ private:
     if (b != '\r') { cmd += (char)b; return; }
     std::string c = cmd;
     cmd.clear();
+    if (offAt && fakeMillis >= offAt) { offAt = 0; powered = false; pdpActive = false; }
     if (!powered || inPsm || fakeMillis < bootAt) return;
+    if (!muteAt.empty() && c.rfind(muteAt, 0) == 0) { muteAt.clear(); muted = true; }
+    if (muted) return;
     if (ignoreCommands > 0) { ignoreCommands--; return; }
     commands.push_back(c);
     if (cncfgSilent > 0 && c.rfind("AT+CNCFG=", 0) == 0) { cncfgSilent--; return; }
@@ -326,6 +340,23 @@ static void testLateResponseTailNotTakenForNextReply() {
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
   CHECK(m.count("AT+CFUN=") == 0);
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
+}
+
+// Visto sul modem vero: muto dopo EXITPSM, va riavviato nello stesso ciclo
+static void testSilentModemRestartedDuringConnect() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "2";
+  m.nbBands = "3,8,20";
+  m.muteAt = "AT+CNCFG=";
+  m.shutdownMs = 2000;  // come sul modem vero: NORMAL POWER DOWN, poi ancora risposte
+  Sim7080 modem(m, 1, HIGH);
+  uint32_t start = fakeMillis;
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(pwrkeyPulses == 2);  // uno lo spegne, l'altro lo riaccende
+  CHECK(m.powered);
+  CHECK(fakeMillis - start < 60000);
   CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
 }
 
@@ -1071,6 +1102,7 @@ int main() {
   testRadioBackOnWhenConfigWriteFails();
   testRadioLeftOffIsTurnedOn();
   testLateResponseTailNotTakenForNextReply();
+  testSilentModemRestartedDuringConnect();
   testNetworkModeChosenBySketch();
   testOnlyBandsDifferent();
   testNothingRewrittenWhileBooting();
