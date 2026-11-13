@@ -47,6 +47,11 @@ public:
   bool raiSupported = true;
   int ignoreCommands = 0;
   int cncfgSilent = 0;  // AT+CNCFG senza risposta, come appena uscito dal PSM
+  int garbledBandReads = 0;  // risposte ad AT+CBANDCFG? con caratteri persi
+  bool cmnbWriteFails = false;
+  bool radioOn = true;
+  bool slowTail = false;  // le righe dopo la prima arrivano solo dopo un'attesa
+  std::string late;
   int actionError = 0;
   bool serverAnswers = true;
   std::string urcBeforeReply;
@@ -110,23 +115,45 @@ private:
       else rx += "\r\nERROR\r\n";
       return;
     }
+    size_t start = rx.size();
     reply(c);
+    if (slowTail) {
+      size_t firstLine = rx.find("\r\n", start + 2);
+      if (firstLine != std::string::npos && firstLine + 2 < rx.size()) {
+        late += rx.substr(firstLine + 2);
+        rx.erase(firstLine + 2);
+      }
+    }
   }
 
   void reply(const std::string& c) {
-    if (c == "AT+CPIN?") {
+    if (c == "AT+CFUN?") {
+      rx += radioOn ? "\r\n+CFUN: 1\r\n\r\nOK\r\n" : "\r\n+CFUN: 0\r\n\r\nOK\r\n";
+    } else if (c == "AT+CFUN=0") {
+      radioOn = false;
+      rx += "\r\nOK\r\n";
+    } else if (c == "AT+CPIN?" && !radioOn) {
+      rx += "\r\nERROR\r\n";  // con la radio spenta la SIM non e' accessibile
+    } else if (c == "AT+CPIN?") {
       rx += simReady ? "\r\n+CPIN: READY\r\n\r\nOK\r\n" : "\r\n+CPIN: NOT READY\r\n\r\nOK\r\n";
     } else if (c == "AT+CGATT?") {
       bool attached = attachAfterPolls-- <= 0 && !attachNeedsRadioRestart;
       rx += attached ? "\r\n+CGATT: 1\r\n\r\nOK\r\n" : "\r\n+CGATT: 0\r\n\r\nOK\r\n";
     } else if (c == "AT+CFUN=1") {
+      radioOn = true;
       attachNeedsRadioRestart = false;
       rx += "\r\nOK\r\n";
     } else if (c == "AT+CMNB?") {
       rx += "\r\n+CMNB: " + networkMode + "\r\n\r\nOK\r\n";
+    } else if (c.rfind("AT+CMNB=", 0) == 0 && cmnbWriteFails) {
+      rx += "\r\nERROR\r\n";
     } else if (c.rfind("AT+CMNB=", 0) == 0) {
       networkMode = c.substr(strlen("AT+CMNB="));
       rx += "\r\nOK\r\n";
+    } else if (c == "AT+CBANDCFG?" && garbledBandReads > 0) {
+      garbledBandReads--;  // come sul modem vero con il buffer UART pieno
+      rx += "\r\n+CBANDCFG: \"CAT-M\",1,2,3,4,5,8,12,13,14,18,19,20,25,26,27,28,66,85\r\n";
+      rx += "+CBANDCFGB-IOT\"," + nbBands + "\r\n\r\nOK\r\n";
     } else if (c == "AT+CBANDCFG?") {
       rx += "\r\n+CBANDCFG: \"CAT-M\",1,2,3,4,5,8,12,13,14,18,19,20,25,26,27,28,66,85\r\n";
       rx += "+CBANDCFG: \"NB-IOT\"," + nbBands + "\r\n\r\nOK\r\n";
@@ -195,7 +222,13 @@ private:
   }
 };
 
-void delay(uint32_t ms) { fakeMillis += ms; }
+void delay(uint32_t ms) {
+  fakeMillis += ms;
+  if (activeModem && !activeModem->late.empty()) {
+    activeModem->injectUrc(activeModem->late);
+    activeModem->late.clear();
+  }
+}
 
 void digitalWrite(int, int level) {
   if (level == HIGH && pwrkeyLevel == LOW) {
@@ -244,6 +277,56 @@ static void testColdBootConnectAndPost() {
   CHECK(m.count("AT+CCOAPACTION") == 1);
   CHECK(m.commands[m.commands.size() - 2] == "AT+CRAI=1,0");  // prima dell'ultimo pacchetto
   CHECK(modem.connected());
+}
+
+// Visto sul modem vero: caratteri persi in una risposta non devono spegnere la radio
+static void testGarbledReadDoesNotReconfigure() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "2";
+  m.nbBands = "3,8,20";
+  m.garbledBandReads = 1;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CFUN=") == 0);
+  CHECK(m.count("AT+CBANDCFG?") == 2);
+}
+
+// Se una scrittura fallisce la radio va comunque riaccesa
+static void testRadioBackOnWhenConfigWriteFails() {
+  FakeModem m; reset(m);
+  m.cmnbWriteFails = true;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(!modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CFUN=0") == 1);
+  CHECK(m.last("AT+CFUN=") == "AT+CFUN=1");
+}
+
+// Visto sul modem vero: radio lasciata spenta da un ciclo precedente
+static void testRadioLeftOffIsTurnedOn() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "2";
+  m.nbBands = "3,8,20";
+  m.radioOn = false;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CFUN=1") == 1);
+  CHECK(m.count("AT+CFUN=0") == 0);
+}
+
+// Visto sul modem vero: il resto di una risposta arrivato in ritardo veniva
+// preso per la risposta al comando successivo, e i comandi si sfasavano
+static void testLateResponseTailNotTakenForNextReply() {
+  FakeModem m; reset(m);
+  m.apnStored = true;
+  m.networkMode = "2";
+  m.nbBands = "3,8,20";
+  m.slowTail = true;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CFUN=") == 0);
+  CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
 }
 
 // Tecnologia e bande vanno corrette, e una sola volta: restano salvate nel modem
@@ -296,7 +379,7 @@ static void testNothingRewrittenWhileBooting() {
   auto psm = std::find(c.begin(), c.end(), "AT+CPSMS?");
   CHECK(attach < psm);
   CHECK(m.count("AT+CPSMS=") == 0);
-  CHECK(m.count("AT+CFUN") == 0);
+  CHECK(m.count("AT+CFUN=") == 0);
   CHECK(m.count("AT+CMNB=") == 0);
 }
 
@@ -365,7 +448,7 @@ static void testStoredApnSkipsCfun() {
   m.nbBands = "3,8,20";
   Sim7080 modem(m, 1, HIGH);
   CHECK(modem.connect(APN, HOST, 5683));
-  CHECK(m.count("AT+CFUN") == 0);
+  CHECK(m.count("AT+CFUN=") == 0);
   CHECK(m.count("AT+CGDCONT=") == 0);
 }
 
@@ -550,7 +633,7 @@ static void testPowerOffThenOnAgain() {
   CHECK(modem.connect(APN, HOST, 5683));
   CHECK(m.powered);
   CHECK(pwrkeyPulses == 1);
-  CHECK(m.count("AT+CFUN") == 2);  // CFUN=0 e CFUN=1 solo alla prima accensione
+  CHECK(m.count("AT+CFUN=") == 2);  // CFUN=0 e CFUN=1 solo alla prima accensione
   CHECK(modem.coapPost(1, "wind", 50, PAYLOAD, false));
 }
 
@@ -618,7 +701,7 @@ static void testWakeFromPsmKeepsContext() {
   CHECK(m.powered);
   CHECK(pwrkeyPulses == 1);
   CHECK(fakeMillis - start < 5000);
-  CHECK(m.count("AT+CFUN") == 0);
+  CHECK(m.count("AT+CFUN=") == 0);
   CHECK(m.count("AT+CPSMS=") == 0);
   CHECK(m.count("AT+CNACT=0,1") == 0);
   CHECK(m.count("AT+CCOAPINIT") == 1);
@@ -984,6 +1067,10 @@ static void testGustUsesMeasuredTime() {
 int main() {
   testColdBootConnectAndPost();
   testNetworkConfiguredWhenDifferent();
+  testGarbledReadDoesNotReconfigure();
+  testRadioBackOnWhenConfigWriteFails();
+  testRadioLeftOffIsTurnedOn();
+  testLateResponseTailNotTakenForNextReply();
   testNetworkModeChosenBySketch();
   testOnlyBandsDifferent();
   testNothingRewrittenWhileBooting();

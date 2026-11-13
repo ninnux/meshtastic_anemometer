@@ -130,10 +130,18 @@ bool Sim7080::command(const char* cmd, uint32_t timeoutMs) {
   return waitLine("OK", nullptr, timeoutMs);
 }
 
-// true se la risposta contiene una riga che inizia con expected, prima di OK
+// true se la risposta contiene una riga che inizia con expected, prima di OK.
+// Si legge comunque fino all'OK finale: le righe rimaste, arrivate dopo,
+// sarebbero prese per la risposta al comando successivo (visto sul modem vero:
+// il resto di AT+CGDCONT? letto come risposta ad AT+CFUN?).
 bool Sim7080::query(const char* cmd, const char* expected, uint32_t timeoutMs) {
   sendCmd(cmd);
-  return waitLine(expected, "OK", timeoutMs);
+  if (!waitLine(expected, "OK", timeoutMs)) return false;
+  char found[sizeof(_line)];
+  memcpy(found, _line, sizeof(found));
+  waitLine("OK", nullptr, timeoutMs);
+  memcpy(_line, found, sizeof(_line));
+  return true;
 }
 
 // ── Accensione e spegnimento ─────────────────────────────────
@@ -205,8 +213,12 @@ bool Sim7080::configureNetwork(const char* apn, const char* networkMode) {
     {"AT+CBANDCFG?", "+CBANDCFG: \"NB-IOT\"," NB_IOT_BANDS},
     {"AT+CGDCONT?", expectedApn},
   };
+  // Una risposta con caratteri persi sembrerebbe un valore diverso: si
+  // riscrive solo se anche una seconda lettura lo conferma.
   bool different = false;
   for (const auto& read : reads) {
+    if (query(read[0], read[1])) continue;
+    if (!lineStartsWith("OK")) return true;
     if (query(read[0], read[1])) continue;
     if (!lineStartsWith("OK")) return true;
     different = true;
@@ -217,12 +229,15 @@ bool Sim7080::configureNetwork(const char* apn, const char* networkMode) {
   snprintf(writeMode, sizeof(writeMode), "AT+CMNB=%s", networkMode);
   char writeApn[96];
   snprintf(writeApn, sizeof(writeApn), "AT+CGDCONT=1,\"IP\",\"%s\"", apn);
-  // Alcuni operatori richiedono l'APN gia' in fase di registrazione
-  return command("AT+CFUN=0", CFUN_TIMEOUT_MS)
-      && command(writeMode)
-      && command("AT+CBANDCFG=\"NB-IOT\"," NB_IOT_BANDS)
-      && command(writeApn)
-      && command("AT+CFUN=1", CFUN_TIMEOUT_MS);
+  // Alcuni operatori richiedono l'APN gia' in fase di registrazione.
+  // La radio va riaccesa anche se una scrittura fallisce: spenta, il modem
+  // non si registrerebbe piu' fino al riavvio della radio in waitAttach.
+  if (!command("AT+CFUN=0", CFUN_TIMEOUT_MS)) return false;
+  bool written = command(writeMode)
+              && command("AT+CBANDCFG=\"NB-IOT\"," NB_IOT_BANDS)
+              && command(writeApn);
+  bool radioOn = command("AT+CFUN=1", CFUN_TIMEOUT_MS);
+  return written && radioOn;
 }
 
 bool Sim7080::waitSimReady(uint32_t timeoutMs) {
@@ -305,6 +320,12 @@ bool Sim7080::connect(const char* apn, const char* host, uint16_t port, const ch
   if (!configureNetwork(apn, networkMode)) {
     Log.println("SIM7080: configurazione rete fallita");
     return false;
+  }
+  // Una configurazione interrotta puo' aver lasciato la radio spenta: con
+  // CFUN=0 la SIM risponde ERROR e il modem non si registrerebbe mai
+  if (!query("AT+CFUN?", "+CFUN: 1") && lineStartsWith("OK")) {
+    Log.println("SIM7080: radio spenta, la riaccendo");
+    command("AT+CFUN=1", CFUN_TIMEOUT_MS);
   }
   if (!waitSimReady(SIM_TIMEOUT_MS)) {
     Log.println("SIM7080: SIM non pronta");
