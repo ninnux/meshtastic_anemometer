@@ -291,8 +291,14 @@ void runModemCycle(const WindReport& report) {
   Serial1.begin(MODEM_BAUD_RATE);
 
   if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT, MODEM_NETWORK_MODE) &&
-      syncClockIfNeeded()) {
-    sendReport(report);
+      syncClockIfNeeded() && !sendReport(report)) {
+    // Con la rete c'era ma l'invio e' fallito: a volte il modem risponde ERROR
+    // ad AT+CCOAPACTION o va in PSM prima di trasmettere. Un secondo tentativo
+    // di solito passa. Senza rete non si riprova: il ciclo durerebbe troppo.
+    Log.println("Invio fallito, riprovo");
+    if (modem.connect(MODEM_APN, COAP_SERVER_IP, COAP_SERVER_PORT, MODEM_NETWORK_MODE)) {
+      sendReport(report);
+    }
   }
 
   modem.standby();

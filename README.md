@@ -441,7 +441,7 @@ Altri dettagli:
 - **Segnale dopo il risveglio:** appena sveglio `AT+CSQ` riporta `99,99` anche se la radio funziona: nelle prove NTP ha risposto proprio in quel momento. Non va usato per decidere se inviare.
 - **Risveglio:** nelle prove la connessione è pronta circa 10 s dopo l'impulso. Dopo il PSM `AT+CGATT?` può riportare `1` prima che la radio sia pronta, quindi il firmware ripete `AT+CNACT` finché la connessione non è attiva.
 - **Quando dorme:** il modem entra in PSM solo dopo che la rete ha rilasciato la connessione e l'active time è scaduto. Prima dell'invio il firmware manda `AT+CRAI` per chiedere un rilascio rapido, che il manuale prevede solo per NB-IoT.
-- **Errori:** il modem non viene mai spento. Se un ciclo fallisce resta in standby e il ciclo successivo riprova. Se dopo 90 s non trova la rete, la radio viene riavviata con `AT+CFUN=0` e `AT+CFUN=1` e la ricerca riparte da capo.
+- **Errori:** il modem non viene mai spento. Se la rete c'è ma l'invio fallisce, il firmware si ricollega e rimanda subito lo stesso dato, una volta sola. Se un ciclo fallisce resta in standby e il ciclo successivo riprova. Se dopo 90 s non trova la rete, la radio viene riavviata con `AT+CFUN=0` e `AT+CFUN=1` e la ricerca riparte da capo.
 - **Watchdog:** se un ciclo del modem dura più di 10 minuti, o il campionamento si ferma, la XIAO si riavvia. All'avvio il monitor seriale lo segnala.
 - **Campionamento:** il modem gira in un task FreeRTOS separato, quindi i comandi AT non interrompono le letture.
 - **Dati persi:** non c'è un buffer. Se la rete manca o il modem è occupato, in coda resta solo l'ultimo report e gli altri vanno persi; ogni report perso vale 5 minuti di dati.
