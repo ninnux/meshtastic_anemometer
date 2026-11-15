@@ -59,6 +59,10 @@
       margin-bottom: 12px;
     }
 
+    .card.wide {
+      grid-column: 1 / -1;
+    }
+
     .card {
       background: #111f3a;
       border-radius: 16px;
@@ -132,11 +136,16 @@
       <div class="card-unit">nodi</div>
     </div>
     <div class="card">
-      <div class="card-label" id="maxLabel">Massima</div>
-      <div class="card-value" id="max">--</div>
+      <div class="card-label">Raffica 3 s</div>
+      <div class="card-value" id="gust">--</div>
       <div class="card-unit">nodi</div>
     </div>
     <div class="card">
+      <div class="card-label">Max 5 min</div>
+      <div class="card-value" id="max">--</div>
+      <div class="card-unit">nodi</div>
+    </div>
+    <div class="card wide">
       <div class="card-label">Direzione</div>
       <div class="card-value" id="dirDeg">--</div>
       <div class="card-unit" id="dirComp"></div>
@@ -156,7 +165,7 @@
     const speedEl       = document.getElementById("speed");
     const meanEl        = document.getElementById("mean");
     const maxEl         = document.getElementById("max");
-    const maxLabelEl    = document.getElementById("maxLabel");
+    const gustEl        = document.getElementById("gust");
     const dirDegEl      = document.getElementById("dirDeg");
     const dirCompEl     = document.getElementById("dirComp");
     const lastUpEl      = document.getElementById("lastUpdate");
@@ -172,14 +181,14 @@
       const m = str.match(/M:([\d.]+)/);
       // Il firmware SIM7080 manda R (raffica degli ultimi 3 s), gli altri X (massima)
       const r = str.match(/R:([\d.]+)/);
-      const x = r || str.match(/X:([\d.]+)/);
+      const x = str.match(/X:([\d.]+)/);
       const d = str.match(/D:(\d+)/);
       const c = str.match(/D:\d+\s+(\w+)/);
 
       if (s) speedEl.textContent   = parseFloat(s[1]).toFixed(1);
       if (m) meanEl.textContent    = parseFloat(m[1]).toFixed(1);
+      if (r) gustEl.textContent    = parseFloat(r[1]).toFixed(1);
       if (x) maxEl.textContent     = parseFloat(x[1]).toFixed(1);
-      if (x) maxLabelEl.textContent = r ? "Raffica" : "Massima";
       if (d) dirDegEl.textContent  = parseInt(d[1]) + "°";
       if (c) dirCompEl.textContent = c[1];
 

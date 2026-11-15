@@ -374,9 +374,9 @@ void setupBLE() {
 
   bleWindData.setProperties(CHR_PROPS_READ | CHR_PROPS_NOTIFY);
   bleWindData.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  bleWindData.setMaxLen(32);
+  bleWindData.setMaxLen(48);
   bleWindData.begin();
-  bleWindData.write("S:0.0 M:0.0 R:0.0 D:0 N", 24);
+  bleWindData.write("S:0.0 M:0.0 R:0.0 X:0.0 D:0 N", 30);
 
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
@@ -414,11 +414,11 @@ void stopAdvertising() {
 // BLE – Aggiorna caratteristica con stringa leggibile
 // ============================================================
 void updateBLE() {
-  char buf[32];
-  // R e' la raffica attuale e non il massimo del periodo: quello resta fermo
-  // per minuti e si azzera a ogni invio, poco utile da guardare in diretta
-  snprintf(buf, sizeof(buf), "S:%.1f M:%.1f R:%.1f D:%d %s",
-           WindSpeed, WindSpeedMean, WindGust,
+  char buf[48];
+  // R: raffica attuale (media sugli ultimi 3 s)
+  // X: massimo di R nel periodo di invio, lo stesso valore mandato al server
+  snprintf(buf, sizeof(buf), "S:%.1f M:%.1f R:%.1f X:%.1f D:%d %s",
+           WindSpeed, WindSpeedMean, WindGust, WindSpeedMax,
            windCalDirection, windCompassDirection);
 
   bleWindData.write(buf, strlen(buf));

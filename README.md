@@ -225,7 +225,7 @@ Su InfluxDB il nodo si distingue dal tag `sensor_name`. Se invece compare un alt
 | `collector_coap.py` | Ricevitore CoAP del firmware SIM7080 in Python: scrive su InfluxDB. |
 | `server/` | Lo stesso ricevitore in Go, consigliato per il server, con lo script di deploy per Devuan in `server/deploy/`. |
 | `platformio.ini`, `pio_sketch_dir.py` | Compilazione con PlatformIO, un ambiente per ogni sketch. |
-| `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, raffica attuale (firmware SIM7080, campo `R`) o massima (altri firmware, campo `X`) e direzione. |
+| `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, raffica attuale su 3 s (campo `R`, solo firmware SIM7080), massima del periodo (campo `X`) e direzione. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
 | `ai/` | Prototipo di previsione basato sui dati storici in InfluxDB (pensato per una futura "boa" con pannello solare) e alert Telegram. |
 | `openweather/` | Modelli di previsione basati sui dati storici di OpenWeather One Call 3.0, uno per spot (Trevignano, Anzio). |
@@ -283,13 +283,13 @@ Gli sketch restano compilabili anche con l'Arduino IDE. PlatformIO usa il BSP Se
 Name:first_anemometer Last:12.3 Mean:10.8 Max:15.1 kn Dir:225 SW
 ```
 
-**BLE** (max 32 byte), servizio `A0010000-0001-0001-0001-000000000001`, caratteristica `A0010000-0001-0001-0001-000000000002` (read + notify), nome dispositivo `WindSensor`:
+**BLE** (max 48 byte), servizio `A0010000-0001-0001-0001-000000000001`, caratteristica `A0010000-0001-0001-0001-000000000002` (read + notify), nome dispositivo `WindSensor`:
 
 ```
-S:12.3 M:10.8 R:14.2 D:225 SW
+S:12.3 M:10.8 R:14.2 X:16.5 D:225 SW
 ```
 
-`S` = istantanea (ultimo secondo), `M` = media del periodo di 5 minuti, `R` = raffica attuale, cioè la media degli ultimi 3 s (nodi), `D` = direzione in gradi + punto cardinale (8 settori). La raffica massima del periodo va solo al server.
+`S` = istantanea (ultimo secondo), `M` = media del periodo di 5 minuti, `R` = raffica attuale, cioè la media degli ultimi 3 s, `X` = raffica massima del periodo (il valore più alto di `R`, lo stesso `max` inviato al server, azzerato a ogni invio) (nodi), `D` = direzione in gradi + punto cardinale (8 settori).
 
 ### Versione compensata (bussola + IMU)
 
