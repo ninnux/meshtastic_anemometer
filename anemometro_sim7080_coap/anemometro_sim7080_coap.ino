@@ -20,8 +20,10 @@
 #define WindSensorPin  2
 #define WindVanePin    A3
 #define VaneOffset     0
-// 35 kn = 18 impulsi/s = uno ogni 56 ms; con 40 ms il limite e' circa 48 kn
-#define DebounceMs     40
+// Magneti sulle coppe: ogni giro chiude il reed una volta per magnete
+#define PulsesPerRotation 2
+// Con 2 magneti 35 kn = 36 impulsi/s = uno ogni 28 ms; con 20 ms il limite e' circa 48 kn
+#define DebounceMs     20
 
 // ── Modem (Serial1: RX=D7, TX=D6) ────────────────────────────
 #define MODEM_BAUD_RATE     115200
@@ -81,13 +83,14 @@ volatile uint32_t ModemBusySinceTick    = 0;
 volatile uint32_t Rotations             = 0;
 volatile uint32_t ContactBounceTick     = 0;
 
-// Davis: V[mph] = P * 2.25 / T, con un impulso a giro; 0.868976 converte in nodi
-const float KnPerPulsePerSecond = 2.25f * 0.868976f;
+// Davis: V[mph] = giri * 2.25 / T; 0.868976 converte in nodi
+const float KnPerPulsePerSecond = 2.25f * 0.868976f / PulsesPerRotation;
 
 RollingGust gust;
 float WindSpeed         = 0.0f;
 float WindSpeedMean     = 0.0f;
 float WindSpeedMax      = 0.0f;
+float WindGust          = 0.0f;  // raffica attuale: media degli ultimi 3 s, per il BLE
 float WindSpeedSum      = 0.0f;
 float WindTimeSum       = 0.0f;
 uint32_t LastSampleTick = 0;
@@ -145,7 +148,8 @@ void setup() {
 
   modem.begin();
 
-  pinMode(WindSensorPin, INPUT);
+  // Pull-up interno: senza, il filo del reed raccoglie disturbi e conta impulsi a coppe ferme
+  pinMode(WindSensorPin, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(WindSensorPin), isr_rotation, FALLING);
   LastSampleTick = xTaskGetTickCount();
 
@@ -221,8 +225,8 @@ void loop() {
   // La massima e' la raffica su 3 s, non il picco del singolo campione
   float gustPulsesPerSecond;
   if (gust.add(rot, elapsedS, gustPulsesPerSecond)) {
-    float gustKn = gustPulsesPerSecond * KnPerPulsePerSecond;
-    if (gustKn > WindSpeedMax) WindSpeedMax = gustKn;
+    WindGust = gustPulsesPerSecond * KnPerPulsePerSecond;
+    if (WindGust > WindSpeedMax) WindSpeedMax = WindGust;
   }
 
   float dirRad = radians(windCalDirection);
@@ -372,7 +376,7 @@ void setupBLE() {
   bleWindData.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
   bleWindData.setMaxLen(32);
   bleWindData.begin();
-  bleWindData.write("S:0.0 M:0.0 X:0.0 D:0 N", 24);
+  bleWindData.write("S:0.0 M:0.0 R:0.0 D:0 N", 24);
 
   Bluefruit.Advertising.addFlags(BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE);
   Bluefruit.Advertising.addTxPower();
@@ -411,8 +415,10 @@ void stopAdvertising() {
 // ============================================================
 void updateBLE() {
   char buf[32];
-  snprintf(buf, sizeof(buf), "S:%.1f M:%.1f X:%.1f D:%d %s",
-           WindSpeed, WindSpeedMean, WindSpeedMax,
+  // R e' la raffica attuale e non il massimo del periodo: quello resta fermo
+  // per minuti e si azzera a ogni invio, poco utile da guardare in diretta
+  snprintf(buf, sizeof(buf), "S:%.1f M:%.1f R:%.1f D:%d %s",
+           WindSpeed, WindSpeedMean, WindGust,
            windCalDirection, windCompassDirection);
 
   bleWindData.write(buf, strlen(buf));
@@ -493,7 +499,9 @@ void getWindDirection() {
 #else
   vaneValue        = analogRead(WindVanePin);
 #endif
-  windDirection    = map(vaneValue, 0, 1023, 0, 360);
+  // Scala invertita: con questo potenziometro la tensione scende girando in
+  // senso orario, mentre l'angolo deve crescere
+  windDirection    = map(vaneValue, 0, 1023, 360, 0);
   windCalDirection = windDirection + VaneOffset;
 
   if (windCalDirection > 360) windCalDirection -= 360;

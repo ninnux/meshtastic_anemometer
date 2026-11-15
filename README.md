@@ -225,7 +225,7 @@ Su InfluxDB il nodo si distingue dal tag `sensor_name`. Se invece compare un alt
 | `collector_coap.py` | Ricevitore CoAP del firmware SIM7080 in Python: scrive su InfluxDB. |
 | `server/` | Lo stesso ricevitore in Go, consigliato per il server, con lo script di deploy per Devuan in `server/deploy/`. |
 | `platformio.ini`, `pio_sketch_dir.py` | Compilazione con PlatformIO, un ambiente per ogni sketch. |
-| `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, massima e direzione. |
+| `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, raffica attuale (firmware SIM7080, campo `R`) o massima (altri firmware, campo `X`) e direzione. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
 | `ai/` | Prototipo di previsione basato sui dati storici in InfluxDB (pensato per una futura "boa" con pannello solare) e alert Telegram. |
 | `openweather/` | Modelli di previsione basati sui dati storici di OpenWeather One Call 3.0, uno per spot (Trevignano, Anzio). |
@@ -253,8 +253,8 @@ Gli sketch restano compilabili anche con l'Arduino IDE. PlatformIO usa il BSP Se
 ### Hardware
 
 - **MCU:** Seeed XIAO nRF52840 (BSP "Seeed nRF52 Boards" ≥ 1.1.0)
-- **Anemometro (coppe):** contatto reed su `D2`, interrupt su fronte di discesa, con debounce software.
-- **Banderuola:** potenziometro su `A3`, mappato linearmente 0–1023 → 0–360°.
+- **Anemometro (coppe):** contatto reed tra `D2` e `GND`, con il pull-up interno della XIAO attivo. Interrupt su fronte di discesa, con debounce software.
+- **Banderuola:** potenziometro su `A3`, mappato linearmente 0–1023 → 360–0°: la scala è invertita perché con il potenziometro montato la tensione scende girando in senso orario.
 - **Meshtastic:** modulo/nodo Meshtastic collegato in seriale su `RX=D7`, `TX=D6` a 38400 baud (libreria Arduino `Meshtastic.h`, funzioni `mt_serial_init` / `mt_send_text`). Il nodo deve avere il Serial Module abilitato in modalità protobuf/API.
 - **Solo versione compensata:** bussola QMC5883L (I²C `0x0D`) e IMU LSM6DS3 integrata nella XIAO Sense (I²C `0x6A`).
 
@@ -286,10 +286,10 @@ Name:first_anemometer Last:12.3 Mean:10.8 Max:15.1 kn Dir:225 SW
 **BLE** (max 32 byte), servizio `A0010000-0001-0001-0001-000000000001`, caratteristica `A0010000-0001-0001-0001-000000000002` (read + notify), nome dispositivo `WindSensor`:
 
 ```
-S:12.3 M:10.8 X:15.1 D:225 SW
+S:12.3 M:10.8 R:14.2 D:225 SW
 ```
 
-`S` = istantanea, `M` = media, `X` = massima (nodi), `D` = direzione in gradi + punto cardinale (8 settori).
+`S` = istantanea (ultimo secondo), `M` = media del periodo di 5 minuti, `R` = raffica attuale, cioè la media degli ultimi 3 s (nodi), `D` = direzione in gradi + punto cardinale (8 settori). La raffica massima del periodo va solo al server.
 
 ### Versione compensata (bussola + IMU)
 
@@ -343,13 +343,13 @@ Sul BLE `M` e `X` sono la media e la raffica del periodo in corso e si azzerano 
 #### Calcolo della velocità
 
 ```
-V[mph] = P × 2.25 / T        P = impulsi, T = tempo misurato in secondi
+V[mph] = G × 2.25 / T        G = giri = impulsi / PulsesPerRotation, T = tempo in secondi
 V[kn]  = V[mph] × 0.868976
 ```
 
-- **Formula:** è quella dell'anemometro Davis 6410 (1600 giri/ora = 1 mph), con un impulso a giro. Ogni impulso al secondo vale 1,96 kn.
+- **Formula:** è quella dell'anemometro Davis 6410 (1600 giri/ora = 1 mph). L'anemometro ha 2 magneti, quindi 2 impulsi a giro (`PulsesPerRotation`): ogni impulso al secondo vale 0,98 kn.
 - **Tempo misurato:** `T` è il tempo reale tra due letture, quindi una lettura in ritardo non crea una falsa raffica.
-- **Debounce:** `DebounceMs` è 40 ms e permette di leggere fino a circa 48 kn. 35 kn corrispondono a un impulso ogni 56 ms.
+- **Debounce:** `DebounceMs` è 20 ms e, con 2 magneti, permette di leggere fino a circa 48 kn. 35 kn corrispondono a un impulso ogni 28 ms.
 - **Risoluzione:** la raffica su 3 s ha passi di circa 0,65 kn, la media su 5 minuti meno di 0,01 kn, il valore `S` su 1 s circa 2 kn.
 
 #### Lettura della direzione
@@ -364,12 +364,12 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
                          Seeed XIAO nRF52840
                        ┌─────────────────────┐
  Anemometro            │                     │            Modem SIM7080G
-   contatto ──────┬────┤ D2                  │          ┌──────────────────┐
-                  │    │                  D6 ├── TX ───▶│ RX               │
-             pull-up   │                  D7 │◀── RX ───┤ TX               │
-              10 kΩ    │                  D1 ├─────────▶│ PWRKEY           │
-                  │    │                     │          │                  │
-           3V3 ───┴────┤ 3V3                 │          │             VBAT │◀── alimentazione
+   contatto ───────────┤ D2 (pull-up interno)│          ┌──────────────────┐
+                       │                  D6 ├── TX ───▶│ RX               │
+                       │                  D7 │◀── RX ───┤ TX               │
+                       │                  D1 ├─────────▶│ PWRKEY           │
+                       │                     │          │                  │
+                       │                     │          │             VBAT │◀── alimentazione
                        │                     │          │                  │    separata
  Banderuola            │                     │          │                  │    (+)
    alimentazione ──────┤ 3V3                 │          │                  │
@@ -383,7 +383,7 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 
 | XIAO | Collegato a | Note |
 |---|---|---|
-| `D2` | contatto dell'anemometro | l'altro capo va a massa. Il pin non ha il pull-up attivo nel firmware, quindi serve una resistenza esterna verso 3V3, ad esempio da 10 kΩ |
+| `D2` | contatto dell'anemometro | l'altro capo va a massa. Il firmware attiva il pull-up interno, quindi non serve una resistenza esterna |
 | `A3` | cursore della banderuola | il potenziometro va tra `3V3` e `GND` della XIAO, perché è letto con riferimento VDD |
 | `D6` (TX) | RX del modem | UART a 115200 baud |
 | `D7` (RX) | TX del modem | |
@@ -414,7 +414,8 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 | `STATION_KEY` | in `secrets.h` | Chiave della stazione, fuori dal repository |
 | `COAP_CONFIRMABLE` | `false` | `true` usa messaggi CON e rileva anche un server spento, con una conferma per ogni messaggio |
 | `REPORT_PERIOD_S` | `300` | Secondi tra due invii |
-| `DebounceMs` | `40` | Debounce del contatto reed |
+| `PulsesPerRotation` | `2` | Impulsi del reed a ogni giro (uno per magnete) |
+| `DebounceMs` | `20` | Debounce del contatto reed |
 | `MODEM_PWRKEY_PIN` | `1` | Pin collegato a PWRKEY |
 | `MODEM_PWRKEY_ACTIVE` | `HIGH` | `HIGH` con transistor sulla scheda del modem, `LOW` se PWRKEY è collegato direttamente |
 | `VaneOffset` | `0` | Offset in gradi per allineare la banderuola al nord |
@@ -528,7 +529,7 @@ Il riferimento per i comandi è il *SIM7070/SIM7080/SIM7090 Series AT Command Ma
 2. **Invio durante il PSM:** su circa 8 cicli uno è andato perso: dopo una nuova registrazione in rete il modem è entrato in PSM durante `AT+CCOAPACTION`, senza risposta.
 3. **Segnale:** nella prova `AT+CSQ` dava 0–4, molto debole. Controlla antenna e posizione.
 4. **Conferme CON:** il firmware presume che la risposta del server arrivi come `+CCOAPRECV`. Se non è così, con `COAP_CONFIRMABLE` ogni invio risulterebbe fallito.
-5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare un solo impulso, anche con il debounce a 40 ms.
+5. **Impulsi per giro e rimbalzi:** un giro lento delle coppe deve dare esattamente 2 impulsi, uno per magnete, anche con il debounce a 20 ms.
 6. **Taratura:** la formula vale per un vero Davis. Un confronto con un anemometro portatile è il controllo più affidabile.
 7. **Consumo:** misura la corrente del modem per vedere quanto consuma davvero nelle varie fasi.
 8. **PWRKEY collegato direttamente:** con un filo tra `D1` e PWRKEY, a seconda della scheda, il modem può accendersi da solo e riavviarsi ogni 16 s circa. Se succede, controlla `MODEM_PWRKEY_ACTIVE`.
