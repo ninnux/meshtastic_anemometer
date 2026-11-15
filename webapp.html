@@ -119,7 +119,7 @@
     #rose .hub    { fill: #e8f4ff; }
     #rose.nodata #needle { opacity: 0.25; }
 
-    /* Grafico 24 ore */
+    /* Grafico ultima ora */
     .chart-card { text-align: left; }
     .chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
     .chart-head .card-label { margin-bottom: 0; }
@@ -184,10 +184,10 @@
     </div>
     <div class="card wide chart-card">
       <div class="chart-head">
-        <div class="card-label">Ultime 24 ore</div>
+        <div class="card-label">Ultima ora</div>
         <div id="chartInfo"></div>
       </div>
-      <svg id="chart" aria-label="Vento nelle ultime 24 ore"></svg>
+      <svg id="chart" aria-label="Vento nell'ultima ora"></svg>
       <div id="chartMsg">Caricamento...</div>
       <div class="legend">
         <span><i style="background:#60a5fa"></i>media 5 min</span>
@@ -277,7 +277,7 @@
 
     buildRose();
 
-    // ── Grafico 24 ore ──────────────────────────────────────
+    // ── Grafico ultima ora ──────────────────────────────────
     const chartEl     = document.getElementById("chart");
     const chartMsgEl  = document.getElementById("chartMsg");
     const chartInfoEl = document.getElementById("chartInfo");
@@ -296,11 +296,12 @@
       const L = 30, R = 8, T = 8, B = 46;   // margini; in basso asse orario e frecce
       chartEl.setAttribute("viewBox", "0 0 " + W + " " + H);
 
-      const tEnd = Date.now() / 1000, tStart = tEnd - 86400;
+      const SPAN = 3600;
+      const tEnd = Date.now() / 1000, tStart = tEnd - SPAN;
       const top = Math.max(5, ...history.map(p => p.max));
       const step = top <= 10 ? 2 : top <= 25 ? 5 : 10;
       const yMax = Math.ceil(top / step) * step;
-      const x = t => L + (t - tStart) / 86400 * (W - L - R);
+      const x = t => L + (t - tStart) / SPAN * (W - L - R);
       const y = v => T + (1 - v / yMax) * (H - T - B);
       layout = { x, tStart, W, L, R };
 
@@ -308,15 +309,15 @@
         svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "grid-line" }, chartEl);
         svgEl("text", { x: L - 5, y: y(v) + 3, "text-anchor": "end", class: "axis-text" }, chartEl).textContent = v;
       }
-      // Tacche alle ore piene multiple di 3
+      // Tacche ogni 10 minuti
       const first = new Date(tStart * 1000);
-      first.setMinutes(0, 0, 0);
-      for (let d = first; d.getTime() / 1000 <= tEnd; d = new Date(d.getTime() + 3600e3)) {
+      first.setSeconds(0, 0);
+      first.setMinutes(Math.ceil(first.getMinutes() / 10) * 10);
+      for (let d = first; d.getTime() / 1000 <= tEnd; d = new Date(d.getTime() + 600e3)) {
         const t = d.getTime() / 1000;
-        if (t < tStart || d.getHours() % 3) continue;
         svgEl("line", { x1: x(t), x2: x(t), y1: T, y2: H - B, class: "grid-line" }, chartEl);
         svgEl("text", { x: x(t), y: H - B + 13, "text-anchor": "middle", class: "axis-text" }, chartEl)
-          .textContent = pad2(d.getHours());
+          .textContent = hhmm(d);
       }
 
       // Linee spezzate dove mancano dati per più di 15 minuti
@@ -331,12 +332,9 @@
       svgEl("path", { d: path("max"),  class: "max"  }, chartEl);
       svgEl("path", { d: path("mean"), class: "mean" }, chartEl);
 
-      // Una freccia di direzione ogni ora circa
+      // Una freccia di direzione per ogni invio
       const arrowY = H - 14;
-      let lastArrow = -Infinity;
       for (const p of history) {
-        if (p.t - lastArrow < 3600) continue;
-        lastArrow = p.t;
         const g = svgEl("g", { transform: "translate(" + x(p.t).toFixed(1) + "," + arrowY +
                                 ") rotate(" + ((p.dir + 180) % 360) + ")" }, chartEl);
         svgEl("polygon", { points: "0,-7 4,5 0,2 -4,5", class: "arrow" }, g);
@@ -375,10 +373,10 @@
 
     async function loadHistory() {
       try {
-        const resp = await fetch("api/history?station=" + encodeURIComponent(STATION), { cache: "no-cache" });
+        const resp = await fetch("api/history?station=" + encodeURIComponent(STATION) + "&range=1h", { cache: "no-cache" });
         if (!resp.ok) throw new Error("HTTP " + resp.status);
         history = (await resp.json()).points;
-        chartMsgEl.textContent = history.length ? "" : "Nessun dato nelle ultime 24 ore";
+        chartMsgEl.textContent = history.length ? "" : "Nessun dato nell'ultima ora";
         chartMsgEl.style.display = history.length ? "none" : "block";
         drawChart();
         showLatest();

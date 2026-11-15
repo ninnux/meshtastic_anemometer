@@ -601,7 +601,7 @@ go test ./...
 
 `webapp.html` è una pagina statica senza dipendenze. Va aperta in un browser con supporto **Web Bluetooth** (Chrome/Edge su Android o desktop; non Safari su iOS) e servita da `https://` o `localhost`. Premendo *Connetti* cerca il dispositivo `WindSensor`, legge la caratteristica una volta al secondo e mostra i valori.
 
-Mostra anche una rosa dei venti con i nomi dei venti (l'ago punta da dove arriva il vento) e, se servita dallo stesso server del collector Go, il grafico delle ultime 24 ore (media, raffica massima e frecce di direzione) letto da `api/history`. Senza Bluetooth la rosa indica la direzione dell'ultimo invio. Il nome della stazione è la costante `STATION` nella pagina.
+Mostra anche una rosa dei venti con i nomi dei venti (l'ago punta da dove arriva il vento) e, se servita dallo stesso server del collector Go, il grafico dell'ultima ora (media, raffica massima e frecce di direzione) letto da `api/history`, con il link a `storico.html` per i periodi più lunghi. Senza Bluetooth la rosa indica la direzione dell'ultimo invio. Il nome della stazione è la costante `STATION` nella pagina.
 
 `storico.html` mostra lo storico di tutte le stazioni: si sceglie la stazione dalla tendina e il periodo (1 ora, 24 ore, 7 giorni, 30 giorni, 1 anno). Per il periodo scelto riporta media, raffica massima con data e direzione media (pesata sulla velocità), più il grafico con media, raffica e frecce di direzione. Indirizzo condivisibile: `storico.html?station=nome&range=7d`. Va servita insieme a `webapp.html`, sullo stesso server di `/api/`.
 
