@@ -23,6 +23,7 @@ const (
 	historyTimeout   = 30 * time.Second
 	historyCacheMax  = 64
 	stationsLookback = 365 * 24 * time.Hour
+	positionLookback = 10 * 365 * 24 * time.Hour
 )
 
 // historyRange è un periodo selezionabile: i report vengono raggruppati in finestre
@@ -58,6 +59,7 @@ type cacheEntry struct {
 //
 //	GET /api/history?station=nome&range=1h|24h|7d|30d|365d  (predefinito 24h)
 //	GET /api/stations                                    elenco delle stazioni
+//	GET /api/position?station=nome                       ultima posizione GNSS
 //
 // Il token di InfluxDB resta sul server: il browser vede solo questi dati.
 type History struct {
@@ -87,6 +89,7 @@ func (h *History) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/history", h.serveHistory)
 	mux.HandleFunc("/api/stations", h.serveStations)
+	mux.HandleFunc("/api/position", h.servePosition)
 	return mux
 }
 
@@ -134,6 +137,70 @@ func (h *History) serveStations(w http.ResponseWriter, r *http.Request) {
 		}{names}, err
 	})
 	h.respond(w, "elenco stazioni", body, err)
+}
+
+// LastPosition è l'ultima posizione GNSS di una stazione; Time è 0 se non ce n'è nessuna.
+type LastPosition struct {
+	Time int64   `json:"t"`
+	Lat  float64 `json:"lat"`
+	Lon  float64 `json:"lon"`
+}
+
+func (h *History) servePosition(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "metodo non ammesso", http.StatusMethodNotAllowed)
+		return
+	}
+	station := r.URL.Query().Get("station")
+	if !namePattern.MatchString(station) {
+		http.Error(w, "stazione non valida", http.StatusBadRequest)
+		return
+	}
+	body, err := h.cached("p:"+station, stationsCacheTTL, func() (any, error) {
+		pos, err := h.queryPosition(r.Context(), station)
+		return struct {
+			Station  string        `json:"station"`
+			Position *LastPosition `json:"position"`
+		}{station, pos}, err
+	})
+	h.respond(w, "posizione "+station, body, err)
+}
+
+func (h *History) queryPosition(ctx context.Context, station string) (*LastPosition, error) {
+	flux := fmt.Sprintf(`from(bucket: %q)
+  |> range(start: -%ds)
+  |> filter(fn: (r) => r._measurement == "position" and r.sensor_name == %q)
+  |> filter(fn: (r) => r._field == "lat" or r._field == "lon")
+  |> last()
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")`,
+		h.bucket, int64(positionLookback.Seconds()), station)
+
+	body, err := h.query(ctx, flux)
+	if err != nil {
+		return nil, err
+	}
+	defer body.Close()
+	rows, err := readCSV(body)
+	if err != nil {
+		return nil, err
+	}
+	// lat e lon vengono sempre scritti insieme: si prende la riga più recente completa
+	var last *LastPosition
+	for _, row := range rows {
+		t, err := time.Parse(time.RFC3339Nano, row["_time"])
+		if err != nil {
+			continue
+		}
+		lat, errLat := strconv.ParseFloat(row["lat"], 64)
+		lon, errLon := strconv.ParseFloat(row["lon"], 64)
+		if errLat != nil || errLon != nil {
+			continue
+		}
+		if last == nil || t.Unix() > last.Time {
+			last = &LastPosition{t.Unix(), lat, lon}
+		}
+	}
+	return last, nil
 }
 
 func (h *History) respond(w http.ResponseWriter, what string, body []byte, err error) {

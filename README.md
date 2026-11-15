@@ -563,7 +563,9 @@ Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP invi
   - `GET /api/stations`: le stazioni con dati nell'ultimo anno, `{"stations":[...]}`;
   - `GET /api/history?station=nome&range=1h|24h|7d|30d|365d` (predefinito `24h`): `{"station":..., "range":..., "window":secondi, "points":[{"t":unix,"mean":kn,"max":kn,"dir":gradi}]}`. I report sono raggruppati in finestre di 5 min (1 ora e 24 ore), 30 min, 2 h o 1 giorno: media delle medie, massimo delle raffiche, direzione media calcolata come vettore. `t` è la fine della finestra.
 
-  Le risposte restano in cache 1 minuto (l'elenco 5 minuti). Legge da InfluxDB con lo stesso token, che non arriva mai al browser. Va ascoltato solo in locale e pubblicato da nginx:
+  - `GET /api/position?station=nome`: l'ultima posizione GNSS, `{"station":..., "position":{"t":unix,"lat":...,"lon":...}}`, oppure `"position":null` se non ce n'è ancora nessuna.
+
+  Le risposte restano in cache 1 minuto (elenco stazioni e posizione 5 minuti). Legge da InfluxDB con lo stesso token, che non arriva mai al browser. Va ascoltato solo in locale e pubblicato da nginx:
 
   ```nginx
   location /api/ {
@@ -618,7 +620,7 @@ go test ./...
 
 Mostra anche una rosa dei venti con i nomi dei venti (l'ago punta da dove arriva il vento) e, se servita dallo stesso server del collector Go, il grafico dell'ultima ora (media, raffica massima e frecce di direzione) letto da `api/history`, con il link a `storico.html` per i periodi più lunghi. Senza Bluetooth la rosa indica la direzione dell'ultimo invio. Il nome della stazione è la costante `STATION` nella pagina.
 
-`storico.html` mostra lo storico di tutte le stazioni: si sceglie la stazione dalla tendina e il periodo (1 ora, 24 ore, 7 giorni, 30 giorni, 1 anno). Per il periodo scelto riporta media, raffica massima con data e direzione media (pesata sulla velocità), più il grafico con media, raffica e frecce di direzione. Indirizzo condivisibile: `storico.html?station=nome&range=7d`. Va servita insieme a `webapp.html`, sullo stesso server di `/api/`.
+`storico.html` mostra lo storico di tutte le stazioni. In alto c'è l'ultimo invio della stazione scelta: vento medio e raffica massima dei 5 minuti, direzione con la stessa rosa dei venti della pagina del sensore (in rosso l'orario se è più vecchio di 15 minuti). Si sceglie la stazione dalla tendina e il periodo (1 ora, 24 ore, 7 giorni, 30 giorni, 1 anno). Per il periodo scelto riporta media, raffica massima con data e direzione media (pesata sulla velocità), più il grafico con media, raffica e frecce di direzione. Sotto mostra l'ultima posizione GNSS della stazione con la data di rilevamento e una mappa OpenStreetMap. Indirizzo condivisibile: `storico.html?station=nome&range=7d`. Va servita insieme a `webapp.html`, sullo stesso server di `/api/`.
 
 ## Collector (Meshtastic → InfluxDB)
 

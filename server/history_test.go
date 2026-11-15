@@ -176,6 +176,38 @@ func TestHistoryInfluxError(t *testing.T) {
 	}
 }
 
+func TestPosition(t *testing.T) {
+	f := &fakeQuery{body: ",result,table,_time,_measurement,sensor_name,lat,lon\r\n" +
+		",_result,0,2026-11-15T10:00:00Z,position,st,41.89123,12.49234\r\n\r\n"}
+	h, _ := newTestHistory(t, f)
+	rec := get(t, h, "/api/position?station=st")
+	want := `{"station":"st","position":{"t":1794736800,"lat":41.89123,"lon":12.49234}}`
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("codice %d: %s", rec.Code, rec.Body)
+	}
+	for _, part := range []string{`r._measurement == "position"`, `r.sensor_name == "st"`, "last()"} {
+		if !strings.Contains(f.flux, part) {
+			t.Errorf("query senza %q:\n%s", part, f.flux)
+		}
+	}
+}
+
+func TestPositionNone(t *testing.T) {
+	h, _ := newTestHistory(t, &fakeQuery{body: "\r\n"})
+	rec := get(t, h, "/api/position?station=st")
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"station":"st","position":null}` {
+		t.Fatalf("codice %d: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestPositionRejectsBadStation(t *testing.T) {
+	f := &fakeQuery{}
+	h, _ := newTestHistory(t, f)
+	if rec := get(t, h, `/api/position?station=a"b`); rec.Code != http.StatusBadRequest || f.calls != 0 {
+		t.Fatalf("codice %d, chiamate %d", rec.Code, f.calls)
+	}
+}
+
 func TestStationsList(t *testing.T) {
 	f := &fakeQuery{body: stationsCSV}
 	h, _ := newTestHistory(t, f)

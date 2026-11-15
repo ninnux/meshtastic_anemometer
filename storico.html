@@ -30,9 +30,7 @@
 
     .controls {
       display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-bottom: 14px;
+      margin-bottom: 12px;
     }
 
     select {
@@ -47,7 +45,7 @@
     }
 
     .ranges {
-      flex: 1 1 300px;
+      margin-bottom: 12px;
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
       background: #111f3a;
@@ -112,7 +110,38 @@
     .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
     #chartMsg { font-size: 0.85em; color: #667; text-align: center; padding: 40px 0; }
 
+    /* Ultimo invio */
+    .now-card { text-align: left; margin-bottom: 12px; }
+    .now { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 12px; align-items: center; }
+    .now-values { display: grid; gap: 14px; text-align: center; }
+    .now-values .card-label { margin-bottom: 4px; }
+    #nowWhen { font-size: 0.75em; color: #4a7ab5; }
+    #nowWhen.old { color: #f87171; }
+    #rose { width: 100%; max-width: 320px; display: block; margin: 0 auto; }
+    #rose .ring   { fill: #0d1a2e; stroke: #1e3a5f; stroke-width: 2; }
+    #rose .tick   { stroke: #2a4a75; stroke-width: 1.5; }
+    #rose .tick.major { stroke: #4a7ab5; stroke-width: 2.5; }
+    #rose .wind   { fill: #4a7ab5; font-size: 11px; text-anchor: middle; dominant-baseline: middle; }
+    #rose .wind.on { fill: #fbbf24; font-weight: 700; }
+    #rose .card4  { fill: #7eb8f7; font-size: 13px; font-weight: 700; text-anchor: middle; dominant-baseline: middle; }
+    #needle { transition: transform 0.6s ease-out; }
+    #needle .head { fill: #fbbf24; }
+    #needle .tail { fill: #475569; }
+    #rose .hub    { fill: #e8f4ff; }
+    #rose.nodata #needle { opacity: 0; }
+
+    .pos-card { margin-top: 12px; text-align: left; }
+    .pos-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+    .pos-head .card-label { margin-bottom: 0; }
+    #posCoords { margin-bottom: 10px; font-size: 1.05em; color: #e8f4ff; font-variant-numeric: tabular-nums; }
+    #posWhen { font-size: 0.75em; color: #4a7ab5; }
+    #posMap { width: 100%; height: 260px; border: 0; border-radius: 10px; display: block; background: #0d1a2e; }
+    #posLink { color: #7eb8f7; font-size: 0.8em; text-decoration: none; display: inline-block; margin-top: 8px; }
+    #posMsg { font-size: 0.85em; color: #667; }
+
     @media (max-width: 480px) {
+      .now { grid-template-columns: minmax(0, 1fr); }
+      .now-values { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
       .card-value { font-size: 1.5em; }
       .card { padding: 12px 6px 10px; }
       #chart { height: 260px; }
@@ -129,13 +158,41 @@
 
   <div class="controls">
     <select id="station" aria-label="Stazione"><option>Caricamento...</option></select>
-    <div class="ranges" role="group" aria-label="Periodo">
-      <button data-range="1h">1 ora</button>
-      <button data-range="24h" class="on">24 ore</button>
-      <button data-range="7d">7 giorni</button>
-      <button data-range="30d">30 giorni</button>
-      <button data-range="365d">1 anno</button>
+  </div>
+
+  <div class="card now-card">
+    <div class="pos-head">
+      <div class="card-label">Ultimo invio</div>
+      <div id="nowWhen"></div>
     </div>
+    <div class="now">
+      <svg id="rose" class="nodata" viewBox="-150 -150 300 300" aria-label="Rosa dei venti"></svg>
+      <div class="now-values">
+        <div>
+          <div class="card-label">Vento medio</div>
+          <div class="card-value" id="nowMean">--</div>
+          <div class="card-unit">nodi · 5 min</div>
+        </div>
+        <div>
+          <div class="card-label">Raffica</div>
+          <div class="card-value" id="nowMax">--</div>
+          <div class="card-unit">nodi · max 5 min</div>
+        </div>
+        <div>
+          <div class="card-label">Direzione</div>
+          <div class="card-value" id="nowDir">--</div>
+          <div class="card-unit" id="nowDirName">&nbsp;</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="ranges" role="group" aria-label="Periodo">
+    <button data-range="1h">1 ora</button>
+    <button data-range="24h" class="on">24 ore</button>
+    <button data-range="7d">7 giorni</button>
+    <button data-range="30d">30 giorni</button>
+    <button data-range="365d">1 anno</button>
   </div>
 
   <div class="grid">
@@ -167,6 +224,19 @@
       <span><i style="background:#60a5fa"></i>media</span>
       <span><i style="background:#fb923c"></i>raffica max</span>
       <span>&#8593; verso in cui soffia</span>
+    </div>
+  </div>
+
+  <div class="card pos-card">
+    <div class="pos-head">
+      <div class="card-label">Posizione</div>
+      <div id="posWhen"></div>
+    </div>
+    <div id="posMsg">Caricamento...</div>
+    <div id="posBox" hidden>
+      <div id="posCoords"></div>
+      <iframe id="posMap" title="Mappa della stazione"></iframe>
+      <a id="posLink" target="_blank" rel="noopener">Apri su OpenStreetMap &rarr;</a>
     </div>
   </div>
 
@@ -208,6 +278,93 @@
     for (const k in attrs) el.setAttribute(k, attrs[k]);
     if (parent) parent.appendChild(el);
     return el;
+  }
+
+  // ── Rosa dei venti (come nella pagina del sensore) ─────
+  const roseEl = document.getElementById("rose");
+  const windLabels = [];
+  let needleAngle = null;
+
+  function polar(deg, r) {
+    const a = (deg - 90) * Math.PI / 180;
+    return [r * Math.cos(a), r * Math.sin(a)];
+  }
+
+  function buildRose() {
+    svgEl("circle", { cx: 0, cy: 0, r: 96, class: "ring" }, roseEl);
+    for (let deg = 0; deg < 360; deg += 11.25) {
+      const major = deg % 45 === 0;
+      const [x1, y1] = polar(deg, major ? 82 : 89);
+      const [x2, y2] = polar(deg, 96);
+      svgEl("line", { x1, y1, x2, y2, class: major ? "tick major" : "tick" }, roseEl);
+    }
+    WINDS.forEach((name, i) => {
+      const [x, y] = polar(i * 45, 120);
+      const t = svgEl("text", { x, y, class: "wind" }, roseEl);
+      t.textContent = name;
+      windLabels.push(t);
+    });
+    ["N", "E", "S", "O"].forEach((name, i) => {
+      const [x, y] = polar(i * 90, 70);
+      svgEl("text", { x, y, class: "card4" }, roseEl).textContent = name;
+    });
+    // L'ago punta da dove arriva il vento, come la banderuola
+    const needle = svgEl("g", { id: "needle" }, roseEl);
+    svgEl("polygon", { points: "0,-80 9,0 -9,0", class: "head" }, needle);
+    svgEl("polygon", { points: "0,58 9,0 -9,0", class: "tail" }, needle);
+    svgEl("circle", { cx: 0, cy: 0, r: 6, class: "hub" }, roseEl);
+  }
+
+  function setRose(deg) {
+    if (deg === null) {
+      roseEl.classList.add("nodata");
+      windLabels.forEach(t => t.classList.remove("on"));
+      return;
+    }
+    // Ruota per la via più breve: da 350° a 10° fa 20°, non un giro all'indietro
+    if (needleAngle === null) needleAngle = deg;
+    else needleAngle += ((deg - needleAngle) % 360 + 540) % 360 - 180;
+    document.getElementById("needle").style.transform = "rotate(" + needleAngle + "deg)";
+    roseEl.classList.remove("nodata");
+    const sector = Math.round(((deg % 360) + 360) % 360 / 45) % 8;
+    windLabels.forEach((t, i) => t.classList.toggle("on", i === sector));
+  }
+
+  // ── Ultimo invio ───────────────────────────────────────
+  // L'ultimo punto dell'ultima ora: con finestre di 5 minuti è l'ultimo report ricevuto
+  async function loadNow() {
+    const forStation = station;
+    const set = (id, text) => document.getElementById(id).textContent = text;
+    const whenEl = document.getElementById("nowWhen");
+    let last = null;
+    try {
+      const resp = await fetch("api/history?station=" + encodeURIComponent(station) + "&range=1h", { cache: "no-cache" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const points = (await resp.json()).points;
+      last = points.length ? points[points.length - 1] : null;
+    } catch (e) {
+      if (forStation !== station) return;
+      whenEl.textContent = "non disponibile (" + e.message + ")";
+      whenEl.className = "old";
+      return;
+    }
+    if (forStation !== station) return;
+    if (!last) {
+      set("nowMean", "--"); set("nowMax", "--"); set("nowDir", "--"); set("nowDirName", "\u00a0");
+      setRose(null);
+      whenEl.textContent = "nessun dato nell'ultima ora";
+      whenEl.className = "old";
+      return;
+    }
+    set("nowMean", last.mean.toFixed(1));
+    set("nowMax", last.max.toFixed(1));
+    set("nowDir", last.dir + "°");
+    set("nowDirName", windName(last.dir));
+    setRose(last.dir);
+    // t è la fine della finestra di 5 minuti che contiene il report: si mostra la finestra
+    const hm = t => { const d = new Date(t * 1000); return pad2(d.getHours()) + ":" + pad2(d.getMinutes()); };
+    whenEl.textContent = "tra le " + hm(last.t - 300) + " e le " + hm(last.t);
+    whenEl.className = Date.now() / 1000 - last.t > 15 * 60 ? "old" : "";
   }
 
   function saved(key) {
@@ -384,6 +541,38 @@
     hidePoint();
   }
 
+  // ── Posizione ──────────────────────────────────────────
+  async function loadPosition() {
+    const msg = document.getElementById("posMsg"), box = document.getElementById("posBox");
+    const when = document.getElementById("posWhen");
+    const forStation = station;
+    try {
+      const resp = await fetch("api/position?station=" + encodeURIComponent(station), { cache: "no-cache" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const pos = (await resp.json()).position;
+      if (forStation !== station) return;  // nel frattempo è stata scelta un'altra stazione
+      if (!pos) {
+        box.hidden = true; when.textContent = "";
+        msg.hidden = false; msg.textContent = "Posizione non ancora disponibile: il GPS la rileva una volta a settimana";
+        return;
+      }
+      const lat = pos.lat.toFixed(5), lon = pos.lon.toFixed(5), d = 0.004;
+      document.getElementById("posCoords").textContent = lat + ", " + lon;
+      when.textContent = "rilevata il " + label(pos.t, true);
+      const bbox = [pos.lon - d, pos.lat - d, pos.lon + d, pos.lat + d].map(v => v.toFixed(5)).join(",");
+      const map = document.getElementById("posMap");
+      const src = "https://www.openstreetmap.org/export/embed.html?bbox=" + bbox + "&layer=mapnik&marker=" + lat + "," + lon;
+      if (map.src !== src) map.src = src;
+      document.getElementById("posLink").href =
+        "https://www.openstreetmap.org/?mlat=" + lat + "&mlon=" + lon + "#map=16/" + lat + "/" + lon;
+      msg.hidden = true; box.hidden = false;
+    } catch (e) {
+      if (forStation !== station) return;
+      box.hidden = true; msg.hidden = false;
+      msg.textContent = "Posizione non disponibile (" + e.message + ")";
+    }
+  }
+
   function setRange(r) {
     range = r;
     rangeBtns.forEach(b => b.classList.toggle("on", b.dataset.range === r));
@@ -399,6 +588,8 @@
     save("storico.station", station);
     syncUrl();
     load();
+    loadNow();
+    loadPosition();
   });
 
   async function init() {
@@ -434,6 +625,8 @@
     stationEl.value = station;
     syncUrl();
     load();
+    loadNow();
+    loadPosition();
   }
 
   let resizeTimer = null;
@@ -443,7 +636,8 @@
   });
 
   // I dati arrivano ogni 5 minuti
-  setInterval(load, 5 * 60 * 1000);
+  setInterval(() => { load(); loadNow(); }, 5 * 60 * 1000);
+  buildRose();
   init();
 </script>
 </body>
