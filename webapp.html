@@ -402,7 +402,12 @@
     let bleChar    = null;
     let pollTimer  = null;
 
+    // Una lettura spezzata (vecchio firmware, MTU piccolo) puo' unire due stringhe
+    // diverse: si scarta tutto cio' che non ha esattamente il formato atteso
+    const VALID = /^S:\d{1,3}\.\d M:\d{1,3}\.\d( R:\d{1,3}\.\d)?( X:\d{1,3}\.\d)? D:\d{1,3} [NSEW]{1,3}$/;
+
     function parseAndUpdate(str) {
+      if (!VALID.test(str)) return;
       rawDataEl.textContent = str;
 
       const s = str.match(/S:([\d.]+)/);

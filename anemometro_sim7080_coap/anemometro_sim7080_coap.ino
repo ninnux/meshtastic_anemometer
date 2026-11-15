@@ -365,8 +365,24 @@ bool syncClockIfNeeded() {
 // ============================================================
 // BLE – Setup
 // ============================================================
+// Con l'MTU predefinito (23) il browser legge la stringa a pezzi da 22 byte: se il
+// valore cambia tra un pezzo e l'altro ne incolla due diverse (es. "X:1" + "13.4").
+// Con 64 la stringa (max 48 byte) arriva in una sola lettura.
+#define BLE_MTU 64
+
+void bleConnectCallback(uint16_t connHandle) {
+  // Se il telefono non chiede un MTU piu' grande, lo chiede il sensore
+  BLEConnection* conn = Bluefruit.Connection(connHandle);
+  if (conn) conn->requestMtuExchange(BLE_MTU);
+}
+
 void setupBLE() {
+  // Va configurato prima di begin()
+  Bluefruit.configPrphConn(BLE_MTU, BLE_GAP_EVENT_LENGTH_DEFAULT,
+                           BLE_GATTS_HVN_TX_QUEUE_SIZE_DEFAULT,
+                           BLE_GATTC_WRITE_CMD_TX_QUEUE_SIZE_DEFAULT);
   Bluefruit.begin();
+  Bluefruit.Periph.setConnectCallback(bleConnectCallback);
   Bluefruit.setTxPower(0);
   Bluefruit.setName("WindSensor");
 
