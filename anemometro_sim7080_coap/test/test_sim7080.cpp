@@ -51,8 +51,11 @@ public:
   bool cmnbWriteFails = false;
   bool radioOn = true;
   bool gnssOn = false;
+  bool unpowered = false;  // alimentazione staccata: non risponde a niente
   int gnssFixAfter = 0;   // risposte senza fix prima della posizione; -1 mai
   int gnssPolls = 0;
+  // Errore stimato dei fix successivi (l'ultimo si ripete); la latitudine dice quale e' stato preso
+  std::vector<std::string> gnssHpa = {"8.5"};
   std::string muteAt;  // da questo comando in poi non risponde finche' non si spegne
   bool muted = false;
   uint32_t shutdownMs = 0;  // dopo l'impulso risponde ancora per questo tempo
@@ -119,7 +122,7 @@ private:
     std::string c = cmd;
     cmd.clear();
     if (offAt && fakeMillis >= offAt) { offAt = 0; powered = false; pdpActive = false; }
-    if (!powered || inPsm || fakeMillis < bootAt) return;
+    if (unpowered || !powered || inPsm || fakeMillis < bootAt) return;
     if (!muteAt.empty() && c.rfind(muteAt, 0) == 0) { muteAt.clear(); muted = true; }
     if (muted) return;
     if (ignoreCommands > 0) { ignoreCommands--; return; }
@@ -227,9 +230,20 @@ private:
       rx += "\r\nOK\r\n";
     } else if (c == "AT+CGNSINF") {
       // Come sul modem vero il GNSS riceve solo con la radio cellulare spenta
-      bool fix = gnssOn && !radioOn && gnssFixAfter >= 0 && gnssPolls++ >= gnssFixAfter;
-      rx += fix ? "\r\n+CGNSINF: 1,1,20261115140000.000,41.891230,12.492340,52.1,0.00,0.0,1,,1.2,1.5,0.9,,10,6,,,42,,\r\n\r\nOK\r\n"
-                : std::string("\r\n+CGNSINF: ") + (gnssOn ? "1" : "0") + ",0,,,,,,,0,,,,,,0,0,,,,,\r\n\r\nOK\r\n";
+      bool fix = gnssOn && !radioOn && gnssFixAfter >= 0 && gnssPolls >= gnssFixAfter;
+      if (fix) {
+        size_t i = std::min((size_t)(gnssPolls - gnssFixAfter), gnssHpa.size() - 1);
+        char lat[16];
+        snprintf(lat, sizeof(lat), "%.6f", 41.0 + i * 0.1);
+        // Formato del manuale (8.2.2): 15° campo satelliti, 17° HPA
+        rx += std::string("\r\n+CGNSINF: 1,1,20261115140000.000,") + lat + ",12.492340,52.1,0.00,0.0,1,,"
+              "1.2,1.5,0.9,,10,," + gnssHpa[i] + ",9.0\r\n\r\nOK\r\n";
+      } else {
+        // Senza fix: come nell'esempio del manuale, stato vuoto e coordinate a zero
+        rx += std::string("\r\n+CGNSINF: ") + (gnssOn ? "1" : "0") +
+              ",,,0.000000,0.000000,-18.000,,,1,,0.1,0.1,0.1,,,,9999000.0,6144.0\r\n\r\nOK\r\n";
+      }
+      if (gnssOn) gnssPolls++;
     } else if (c.rfind("AT+CRAI=", 0) == 0) {
       rx += raiSupported ? "\r\nOK\r\n" : "\r\nERROR\r\n";
     } else if (c == "AT+CCOAPACTION") {
@@ -901,7 +915,11 @@ static void testParseGnssInfo() {
   GnssPosition p = {0, 0};
   CHECK(parseGnssInfo("1,1,20261115140000.000,41.891230,12.492340,52.1,0.00", p));
   CHECK(p.lat > 41.8912f && p.lat < 41.8913f && p.lon > 12.4923f && p.lon < 12.4924f);
+  CHECK(p.hpa == GNSS_HPA_UNKNOWN);  // riga senza il campo HPA
   CHECK(parseGnssInfo("1,1,20261115140000.000,-33.5,-70.25,", p) && p.lat == -33.5f && p.lon == -70.25f);
+  // Riga del modem vero, con il fix: 4 satelliti, HPA 10 km
+  CHECK(parseGnssInfo("1,1,20261115182949.342,41.912568,12.524532,-45.023,0.05,,1,,500.0,500.0,500.0,,4,,10002.0,9989.4", p));
+  CHECK(p.hpa == 10002.0f);
   CHECK(!parseGnssInfo("1,0,,,,,,,0,,,,,,0,0,,,,,", p));    // in ricerca
   // Esempio del manuale (8.2.2) senza fix: stato vuoto e coordinate a zero
   CHECK(!parseGnssInfo("1,,,0.000000,0.000000,-18.000,,,1,,0.1,0.1,0.1,,,,9999000.0,6144.0", p));
@@ -918,8 +936,8 @@ static void testGnssFix() {
   m.gnssFixAfter = 3;
   Sim7080 modem(m, 1, HIGH);
   GnssPosition p = {0, 0};
-  CHECK(modem.gnssFix(p, 60000));
-  CHECK(p.lat > 41.8912f && p.lat < 41.8913f && p.lon > 12.4923f && p.lon < 12.4924f);
+  CHECK(modem.gnssFix(p, 60000) == Sim7080::GNSS_FIX);
+  CHECK(p.lat > 40.99f && p.lat < 41.01f && p.lon > 12.4923f && p.lon < 12.4924f && p.hpa == 8.5f);
   CHECK(m.count("AT+CGNSINF") == 4);
   // Radio spenta prima del GNSS, GNSS spento e radio riaccesa alla fine
   auto at = [&](const std::string& c) {
@@ -937,7 +955,7 @@ static void testGnssTimeout() {
   m.gnssFixAfter = -1;
   Sim7080 modem(m, 1, HIGH);
   GnssPosition p = {0, 0};
-  CHECK(!modem.gnssFix(p, 60000));
+  CHECK(modem.gnssFix(p, 60000) == Sim7080::GNSS_NO_FIX);
   CHECK(fakeMillis >= 60000 && fakeMillis < 70000);
   CHECK(!m.gnssOn && m.radioOn);
   CHECK(m.commands.back() == "AT+CFUN=1");
@@ -949,8 +967,40 @@ static void testGnssWakesFromPsm() {
   m.enterPsm();
   Sim7080 modem(m, 1, HIGH);
   GnssPosition p = {0, 0};
-  CHECK(modem.gnssFix(p, 60000));
+  CHECK(modem.gnssFix(p, 60000) == Sim7080::GNSS_FIX);
   CHECK(pwrkeyPulses == 1);
+}
+
+// Visto sul modem vero: il primo fix con 4 satelliti aveva un errore stimato di 10 km
+static void testGnssWaitsForAccuracy() {
+  FakeModem m; reset(m);
+  m.gnssHpa = {"10002.0", "800.0", "35.2"};
+  Sim7080 modem(m, 1, HIGH);
+  GnssPosition p = {0, 0, 0};
+  CHECK(modem.gnssFix(p, 60000) == Sim7080::GNSS_FIX);
+  CHECK(p.lat > 41.19f && p.lat < 41.21f && p.hpa < 36.0f);  // il terzo
+  CHECK(m.count("AT+CGNSINF") == 3);
+}
+
+// Senza precisione sufficiente allo scadere vale il fix migliore, non l'ultimo
+static void testGnssKeepsBestAtTimeout() {
+  FakeModem m; reset(m);
+  m.gnssHpa = {"900.0", "120.0", "400.0"};
+  Sim7080 modem(m, 1, HIGH);
+  GnssPosition p = {0, 0, 0};
+  CHECK(modem.gnssFix(p, 60000) == Sim7080::GNSS_FIX);
+  CHECK(p.lat > 41.09f && p.lat < 41.11f && p.hpa == 120.0f);  // il secondo
+  CHECK(fakeMillis >= 60000);
+}
+
+// Modem spento o senza alimentazione: va distinto da "nessun fix"
+static void testGnssNoModem() {
+  FakeModem m; reset(m);
+  m.unpowered = true;
+  Sim7080 modem(m, 1, HIGH);
+  GnssPosition p = {0, 0};
+  CHECK(modem.gnssFix(p, 60000) == Sim7080::GNSS_NO_MODEM);
+  CHECK(m.count("AT+CGNSPWR") == 0);
 }
 
 static void testPayloadTooLong() {
@@ -1239,6 +1289,9 @@ int main() {
   testGnssFix();
   testGnssTimeout();
   testGnssWakesFromPsm();
+  testGnssNoModem();
+  testGnssWaitsForAccuracy();
+  testGnssKeepsBestAtTimeout();
   testParseModemClock();
   testParseModemClockRejects();
   testClockTimestamps();

@@ -19,6 +19,10 @@
 #define NTP_RETRY_MS       3000UL    // appena uscito dal PSM il DNS puo' non essere pronto
 #define COAP_ACK_MS        100000UL  // comprende le ritrasmissioni CON del modem
 #define GNSS_POLL_MS       2000UL
+#define GNSS_LOG_EVERY     5        // risposta GNSS sul log ogni 5 letture (10 s)
+// Il primo fix con pochi satelliti puo' sbagliare di chilometri (visto: HPA 10 km
+// con 4 satelliti): si continua finche' l'errore stimato non scende sotto questa soglia
+#define GNSS_TARGET_HPA_M  50.0f
 #define POLL_MS            5
 #define FLUSH_MAX_BYTES    2048  // un modem che trasmette senza sosta non blocca il task
 
@@ -408,11 +412,11 @@ bool Sim7080::syncTime(const char* ntpServer, uint32_t& unixSeconds) {
 }
 
 // ── GNSS ─────────────────────────────────────────────────────
-bool Sim7080::gnssFix(GnssPosition& pos, uint32_t timeoutMs) {
+Sim7080::GnssResult Sim7080::gnssFix(GnssPosition& pos, uint32_t timeoutMs) {
   _connected = false;
   if (!wake()) {
     Log.println("SIM7080: nessuna risposta AT");
-    return false;
+    return GNSS_NO_MODEM;
   }
   command("ATE0");
 
@@ -422,21 +426,32 @@ bool Sim7080::gnssFix(GnssPosition& pos, uint32_t timeoutMs) {
   if (command("AT+CGNSPWR=1")) {
     Log.println("SIM7080: GNSS acceso, cerco la posizione");
     uint32_t start = xTaskGetTickCount();
-    while (xTaskGetTickCount() - start < ms2tick(timeoutMs)) {
-      // Risposta fino a 94 caratteri (manuale 8.2.2): _line puo' troncarne la coda,
-      // ma servono solo i primi cinque campi
-      if (query("AT+CGNSINF", "+CGNSINF:") && parseGnssInfo(_line + strlen("+CGNSINF:"), pos)) {
+    for (uint32_t n = 0; xTaskGetTickCount() - start < ms2tick(timeoutMs); n++) {
+      bool answered = query("AT+CGNSINF", "+CGNSINF:");
+      // Per la diagnosi: il 15° campo e' il numero di satelliti in vista, il 17° l'errore
+      if (answered && n % GNSS_LOG_EVERY == 0) {
+        Log.print("GNSS: ");
+        Log.println(_line);
+      }
+      GnssPosition p;
+      if (answered && parseGnssInfo(_line + strlen("+CGNSINF:"), p) && (!fixed || p.hpa < pos.hpa)) {
+        pos = p;
         fixed = true;
-        break;
+        if (pos.hpa <= GNSS_TARGET_HPA_M) {
+          Log.print("GNSS: ");
+          Log.println(_line);
+          break;
+        }
       }
       delay(GNSS_POLL_MS);
     }
+    // Allo scadere si tiene comunque il fix migliore trovato
     command("AT+CGNSPWR=0");
   }
   // Sempre, anche dopo un errore: con la radio spenta il modem non si registrerebbe piu'
   command("AT+CFUN=1", CFUN_TIMEOUT_MS);
   Log.println(fixed ? "SIM7080: posizione trovata" : "SIM7080: posizione non trovata");
-  return fixed;
+  return fixed ? GNSS_FIX : GNSS_NO_FIX;
 }
 
 // ── CoAP ─────────────────────────────────────────────────────

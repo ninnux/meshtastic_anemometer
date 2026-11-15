@@ -325,7 +325,7 @@ Il messaggio è un CoAP POST su `coap://<server>:5683/wind`, con Content-Format 
 
 #### Posizione GNSS
 
-La stazione legge la posizione con il GNSS del SIM7080G (serve l'antenna GNSS collegata): la prima volta dopo il primo invio, poi una volta a settimana. Se non trova il fix entro 3 minuti riprova dopo un giorno. Siccome GNSS e rete cellulare condividono la radio, durante la ricerca la radio cellulare è spenta (`AT+CFUN=0`) e viene riaccesa subito dopo.
+La stazione legge la posizione con il GNSS del SIM7080G (serve l'antenna GNSS collegata): la prima volta dopo il primo invio, poi una volta a settimana. Dopo il primo fix continua a leggere finché l'errore stimato dal modem (HPA) scende sotto i 50 m: il primo fix con pochi satelliti può sbagliare di chilometri. Il tempo massimo è 8 minuti; allo scadere usa il fix migliore trovato, e se non ne ha trovato nessuno riprova dopo un giorno. Se il modem non risponde, il tentativo non conta e si riprova al ciclo successivo. Durante la ricerca, ogni 10 s il log USB mostra la risposta di `AT+CGNSINF` (15° campo: satelliti in vista, 17°: errore stimato in metri). Nella prova con l'antenna alla finestra: fix sotto i 50 m in circa 50 s. Siccome GNSS e rete cellulare condividono la radio, durante la ricerca la radio cellulare è spenta (`AT+CFUN=0`) e viene riaccesa subito dopo.
 
 La posizione va solo nel messaggio successivo alla lettura, con i campi `lat` e `lon` (gradi, 5 decimali, circa 1 m) prima di `sig`:
 
@@ -335,7 +335,7 @@ La posizione va solo nel messaggio successivo alla lettura, con i campi `lat` e 
 
 Il collector Go la salva nella measurement `position` (campi `lat`, `lon`, tag `sensor_name`); `collector_coap.py` la ignora.
 
-Consumi stimati, con circa 30 mA a GNSS acceso: 0,5 mAh per una ricerca tipica di 60 s, al massimo circa 1,5 mAh se scade il tempo. Traffico: 31 byte in più a settimana.
+Consumi stimati, con circa 30 mA a GNSS acceso: 0,5 mAh per una ricerca tipica di 60 s, al massimo circa 4 mAh se scade il tempo. Traffico: 31 byte in più a settimana.
 
 #### Autenticazione
 

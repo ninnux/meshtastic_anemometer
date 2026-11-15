@@ -6,22 +6,28 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define GNSS_HPA_UNKNOWN 1e9f
+
 struct GnssPosition {
   float lat;  // gradi, positivi a nord
   float lon;  // gradi, positivi a est
+  float hpa;  // errore orizzontale stimato dal modem, metri (GNSS_HPA_UNKNOWN se manca)
 };
 
 // Legge la risposta di AT+CGNSINF dopo "+CGNSINF:", senza spazi:
-// <run>,<fix>,<UTC>,<lat>,<lon>,<alt>,...
+// <run>,<fix>,<UTC>,<lat>,<lon>,<alt>,<speed>,<course>,<mode>,,<HDOP>,<PDOP>,<VDOP>,,
+// <satelliti in vista>,,<HPA>,<VPA>  (manuale 8.2.2)
 // Ritorna true solo con il fix valido e coordinate plausibili.
 inline bool parseGnssInfo(const char* text, GnssPosition& pos) {
-  const char* field[5];
-  field[0] = text;
-  for (int i = 1; i < 5; i++) {
-    const char* comma = strchr(field[i - 1], ',');
-    if (!comma) return false;
-    field[i] = comma + 1;
+  const int HPA = 16;
+  const char* field[HPA + 1] = {text};
+  int count = 1;
+  for (; count <= HPA; count++) {
+    const char* comma = strchr(field[count - 1], ',');
+    if (!comma) break;
+    field[count] = comma + 1;
   }
+  if (count < 5) return false;
   if (field[1][0] != '1' || field[1][1] != ',') return false;  // fix non ancora valido
 
   char* end;
@@ -34,5 +40,10 @@ inline bool parseGnssInfo(const char* text, GnssPosition& pos) {
   if (lat == 0 && lon == 0) return false;  // valore di riempimento di alcuni moduli
   pos.lat = (float)lat;
   pos.lon = (float)lon;
+  pos.hpa = GNSS_HPA_UNKNOWN;
+  if (count > HPA) {
+    double hpa = strtod(field[HPA], &end);
+    if (end != field[HPA] && hpa >= 0) pos.hpa = (float)hpa;
+  }
   return true;
 }

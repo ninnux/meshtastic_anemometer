@@ -32,7 +32,9 @@ public:
   // Accende il GNSS e attende la posizione per al massimo timeoutMs, poi lo spegne.
   // GNSS e rete cellulare condividono la radio: durante la ricerca la rete e'
   // spenta, quindi va chiamato dopo l'invio. Il prossimo connect la riaccende.
-  bool gnssFix(GnssPosition& pos, uint32_t timeoutMs);
+  // GNSS_NO_MODEM: il modem non ha risposto, la ricerca non e' nemmeno partita.
+  enum GnssResult { GNSS_FIX, GNSS_NO_FIX, GNSS_NO_MODEM };
+  GnssResult gnssFix(GnssPosition& pos, uint32_t timeoutMs);
 
   // Smette di usare il modem, che resta registrato ed entra da solo in PSM
   // quando la rete rilascia la connessione e scade l'active time.
@@ -66,6 +68,6 @@ private:
   uint8_t _pwrkeyActive;
   bool    _connected = false;
   bool    _silent = false;  // smesso di rispondere durante la connessione
-  char    _line[96];
+  char    _line[128];  // AT+CGNSINF arriva a 103 caratteri
   size_t  _lineLen   = 0;
 };

@@ -55,7 +55,9 @@
 // solo nell'invio successivo: in tutti gli altri messaggi non c'e'.
 #define GNSS_PERIOD_S     (7UL * 24 * 3600)
 #define GNSS_RETRY_S      (24UL * 3600)  // senza fix (cielo coperto, antenna): riprova dopo un giorno
-#define GNSS_TIMEOUT_MS   180000UL       // partenza a freddo: di solito 30-60 s a cielo aperto
+// Partenza a freddo: di solito 30-60 s a cielo aperto, ma senza almanacco fino a 12 minuti.
+// Con l'attesa del modem resta sotto MODEM_CYCLE_MAX_S, oltre il quale il watchdog riavvia.
+#define GNSS_TIMEOUT_MS   480000UL
 
 // ── Watchdog ─────────────────────────────────────────────────
 // Il loop lo ricarica ogni secondo, ma smette se un ciclo del modem dura
@@ -314,16 +316,22 @@ void runGnssIfDue() {
 
   Serial1.begin(MODEM_BAUD_RATE);
   GnssPosition pos;
-  if (modem.gnssFix(pos, GNSS_TIMEOUT_MS)) {
+  Sim7080::GnssResult result = modem.gnssFix(pos, GNSS_TIMEOUT_MS);
+  if (result == Sim7080::GNSS_FIX) {
     gnssPosition = pos;
     gnssPending  = true;
     gnssNextTick = now + GNSS_PERIOD_S * WIND_CLOCK_TICK_HZ;  // ms2tick traboccherebbe a 32 bit
     Log.print("Posizione: ");
     Log.print(pos.lat, 5);
     Log.print(", ");
-    Log.println(pos.lon, 5);
-  } else {
+    Log.print(pos.lon, 5);
+    Log.print(" errore stimato (m): ");
+    Log.println(pos.hpa, 1);
+  } else if (result == Sim7080::GNSS_NO_FIX) {
     gnssNextTick = now + GNSS_RETRY_S * WIND_CLOCK_TICK_HZ;
+  } else {
+    // Modem muto o spento: non era un tentativo vero, si riprova al ciclo dopo
+    gnssTried = false;
   }
   modem.standby();
   Serial1.end();
