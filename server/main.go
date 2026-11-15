@@ -2,7 +2,8 @@
 // {"id": nome_stazione, "mean": kn, "max": kn, "dir": gradi, "n": ora_unix, "sig": firma}.
 //
 // Accetta solo i messaggi firmati con le chiavi di STATION_KEYS. Senza INFLUX_URL
-// nell'ambiente registra soltanto i dati ricevuti.
+// nell'ambiente registra soltanto i dati ricevuti. Con HTTP_ADDR serve anche
+// GET /api/history e /api/stations, lo storico per le pagine web (vedi history.go).
 package main
 
 import (
@@ -12,9 +13,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/plgd-dev/go-coap/v3/message"
 	"github.com/plgd-dev/go-coap/v3/message/codes"
@@ -99,9 +102,32 @@ func run() error {
 
 	var store func(string)
 	writerDone := make(chan struct{})
-	if influxURL := os.Getenv("INFLUX_URL"); influxURL != "" {
-		writer := NewInfluxWriter(influxURL, os.Getenv("INFLUX_TOKEN"),
-			getenv("INFLUX_ORG", "meteo_org"), getenv("INFLUX_BUCKET", "anemometri"))
+	httpDone := make(chan struct{})
+	influxURL := os.Getenv("INFLUX_URL")
+	influxOrg, influxBucket := getenv("INFLUX_ORG", "meteo_org"), getenv("INFLUX_BUCKET", "anemometri")
+	if httpAddr := os.Getenv("HTTP_ADDR"); httpAddr != "" && influxURL != "" {
+		mux := http.NewServeMux()
+		history := NewHistory(influxURL, os.Getenv("INFLUX_TOKEN"), influxOrg, influxBucket).Handler()
+		mux.Handle("/api/", history)
+		httpServer := &http.Server{Addr: httpAddr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			defer close(httpDone)
+			log.Printf("server HTTP in ascolto su %s", httpAddr)
+			if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("server HTTP: %v", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+			httpServer.Shutdown(shutdownCtx)
+		}()
+	} else {
+		close(httpDone)
+	}
+	if influxURL != "" {
+		writer := NewInfluxWriter(influxURL, os.Getenv("INFLUX_TOKEN"), influxOrg, influxBucket)
 		store = writer.Enqueue
 		go func() {
 			writer.Run(ctx)
@@ -153,6 +179,7 @@ func run() error {
 	}
 	stop()
 	<-writerDone
+	<-httpDone
 	log.Print("server CoAP fermato")
 	return err
 }

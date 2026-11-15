@@ -16,3 +16,7 @@ STATION_KEYS=""
 # Indirizzo e porta UDP di ascolto del server CoAP
 COAP_BIND="::"
 COAP_PORT="5683"
+
+# Indirizzo HTTP per lo storico della webapp (GET /api/history?station=nome).
+# Solo locale: nginx lo pubblica su /api/. Vuoto = disattivato. Serve INFLUX_URL.
+HTTP_ADDR="127.0.0.1:8080"

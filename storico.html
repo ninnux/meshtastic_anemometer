@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storico vento</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0a1628;
+      color: #fff;
+      min-height: 100vh;
+      padding: 20px 16px;
+    }
+
+    main { max-width: 960px; margin: 0 auto; }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    h1 { font-size: 1.3em; font-weight: 500; color: #7eb8f7; }
+    header a { color: #4a7ab5; font-size: 0.85em; text-decoration: none; }
+    header a:hover { color: #7eb8f7; }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    select {
+      flex: 1 1 200px;
+      min-width: 0;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid #1e3a5f;
+      background: #111f3a;
+      color: #e8f4ff;
+      font-size: 1em;
+    }
+
+    .ranges {
+      flex: 1 1 300px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      background: #111f3a;
+      border: 1px solid #1e3a5f;
+      border-radius: 12px;
+      padding: 3px;
+      gap: 3px;
+    }
+    .ranges button {
+      border: none;
+      border-radius: 9px;
+      padding: 9px 4px;
+      background: transparent;
+      color: #7eb8f7;
+      font-size: 0.9em;
+      cursor: pointer;
+    }
+    .ranges button.on { background: #1a56db; color: #fff; font-weight: 600; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .card {
+      background: #111f3a;
+      border-radius: 16px;
+      padding: 16px 12px 12px;
+      text-align: center;
+      border: 1px solid #1e3a5f;
+    }
+    .card-label {
+      font-size: 0.72em;
+      color: #4a7ab5;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 8px;
+    }
+    .card-value {
+      font-size: 2em;
+      font-weight: 600;
+      color: #e8f4ff;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .card-unit { font-size: 0.75em; color: #4a7ab5; margin-top: 6px; }
+
+    .chart-card { text-align: left; }
+    .chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+    .chart-head .card-label { margin-bottom: 0; }
+    #chartInfo { font-size: 0.78em; color: #7eb8f7; min-height: 1.2em; font-variant-numeric: tabular-nums; }
+    #chart { width: 100%; height: 320px; display: block; touch-action: pan-y; }
+    #chart .grid-line { stroke: #1e3a5f; stroke-width: 1; }
+    #chart .axis-text { fill: #4a7ab5; font-size: 10px; }
+    #chart .mean { fill: none; stroke: #60a5fa; stroke-width: 2; stroke-linejoin: round; }
+    #chart .max  { fill: none; stroke: #fb923c; stroke-width: 1.5; stroke-linejoin: round; }
+    #chart .arrow { fill: #94a3b8; }
+    #chart .cursor { stroke: #e8f4ff; stroke-width: 1; stroke-dasharray: 3 3; }
+    .legend { display: flex; gap: 14px; font-size: 0.72em; color: #4a7ab5; margin-top: 6px; flex-wrap: wrap; }
+    .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; border-radius: 2px; }
+    #chartMsg { font-size: 0.85em; color: #667; text-align: center; padding: 40px 0; }
+
+    @media (max-width: 480px) {
+      .card-value { font-size: 1.5em; }
+      .card { padding: 12px 6px 10px; }
+      #chart { height: 260px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+
+  <header>
+    <h1>&#127811; Storico vento</h1>
+    <a href="./">&larr; Sensore live</a>
+  </header>
+
+  <div class="controls">
+    <select id="station" aria-label="Stazione"><option>Caricamento...</option></select>
+    <div class="ranges" role="group" aria-label="Periodo">
+      <button data-range="1h">1 ora</button>
+      <button data-range="24h" class="on">24 ore</button>
+      <button data-range="7d">7 giorni</button>
+      <button data-range="30d">30 giorni</button>
+      <button data-range="365d">1 anno</button>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-label">Media</div>
+      <div class="card-value" id="sumMean">--</div>
+      <div class="card-unit">nodi</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Raffica max</div>
+      <div class="card-value" id="sumMax">--</div>
+      <div class="card-unit" id="sumMaxWhen">nodi</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Direzione</div>
+      <div class="card-value" id="sumDir">--</div>
+      <div class="card-unit" id="sumDirName">media</div>
+    </div>
+  </div>
+
+  <div class="card chart-card">
+    <div class="chart-head">
+      <div class="card-label" id="chartTitle">Ultime 24 ore</div>
+      <div id="chartInfo"></div>
+    </div>
+    <svg id="chart" aria-label="Grafico del vento"></svg>
+    <div id="chartMsg">Caricamento...</div>
+    <div class="legend">
+      <span><i style="background:#60a5fa"></i>media</span>
+      <span><i style="background:#fb923c"></i>raffica max</span>
+      <span>&#8593; verso in cui soffia</span>
+    </div>
+  </div>
+
+</main>
+<script>
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const RANGES = {
+    "1h":   { span: 3600,        title: "Ultima ora" },
+    "24h":  { span: 86400,       title: "Ultime 24 ore" },
+    "7d":   { span: 7 * 86400,   title: "Ultimi 7 giorni" },
+    "30d":  { span: 30 * 86400,  title: "Ultimi 30 giorni" },
+    "365d": { span: 365 * 86400, title: "Ultimo anno" },
+  };
+  const WINDS  = ["Tramontana", "Grecale", "Levante", "Scirocco", "Ostro", "Libeccio", "Ponente", "Maestrale"];
+  const DAYS   = ["dom", "lun", "mar", "mer", "gio", "ven", "sab"];
+  const MONTHS = ["gen", "feb", "mar", "apr", "mag", "giu", "lug", "ago", "set", "ott", "nov", "dic"];
+
+  const stationEl   = document.getElementById("station");
+  const chartEl     = document.getElementById("chart");
+  const chartMsgEl  = document.getElementById("chartMsg");
+  const chartInfoEl = document.getElementById("chartInfo");
+  const rangeBtns   = document.querySelectorAll(".ranges button");
+
+  let station = null, range = "24h", data = null, layout = null, requestId = 0;
+
+  const pad2 = n => n.toString().padStart(2, "0");
+  const windName = deg => WINDS[Math.round(((deg % 360) + 360) % 360 / 45) % 8];
+
+  function label(t, withTime) {
+    const d = new Date(t * 1000);
+    const day = pad2(d.getDate()) + " " + MONTHS[d.getMonth()];
+    return withTime ? day + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes()) : day;
+  }
+  // Fino a 7 giorni conta l'ora; su 30 giorni e un anno basta la data
+  const pointLabel = t => label(t, range === "1h" || range === "24h" || range === "7d");
+
+  function svgEl(tag, attrs, parent) {
+    const el = document.createElementNS(SVG_NS, tag);
+    for (const k in attrs) el.setAttribute(k, attrs[k]);
+    if (parent) parent.appendChild(el);
+    return el;
+  }
+
+  function saved(key) {
+    try { return localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) {}
+  }
+
+  // Indirizzo condivisibile: storico.html?station=nome&range=7d
+  function syncUrl() {
+    const params = new URLSearchParams({ station, range });
+    history.replaceState(null, "", "?" + params);
+  }
+
+  // ── Riepilogo ──────────────────────────────────────────
+  function summarize(points) {
+    const set = (id, text) => document.getElementById(id).textContent = text;
+    if (!points.length) {
+      set("sumMean", "--"); set("sumMax", "--"); set("sumDir", "--");
+      set("sumMaxWhen", "nodi"); set("sumDirName", "media");
+      return;
+    }
+    const mean = points.reduce((s, p) => s + p.mean, 0) / points.length;
+    const top = points.reduce((a, p) => p.max > a.max ? p : a);
+    // Direzione media come vettore, pesata sulla velocità: il vento debole conta poco
+    let sx = 0, sy = 0;
+    for (const p of points) {
+      const w = Math.max(p.mean, 0.1), a = p.dir * Math.PI / 180;
+      sx += w * Math.sin(a); sy += w * Math.cos(a);
+    }
+    const dir = Math.round((Math.atan2(sx, sy) * 180 / Math.PI + 360) % 360);
+    set("sumMean", mean.toFixed(1));
+    set("sumMax", top.max.toFixed(1));
+    set("sumMaxWhen", "nodi · " + pointLabel(top.t));
+    set("sumDir", dir + "°");
+    set("sumDirName", windName(dir));
+  }
+
+  // ── Grafico ────────────────────────────────────────────
+  function drawChart() {
+    chartEl.textContent = "";
+    layout = null;
+    const points = data ? data.points : [];
+    if (!points.length) return;
+
+    const W = chartEl.clientWidth || 320, H = chartEl.clientHeight || 320;
+    const L = 32, R = 10, T = 10, B = 50;
+    chartEl.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+    const span = RANGES[range].span;
+    const tEnd = Date.now() / 1000, tStart = tEnd - span;
+    const top = Math.max(5, ...points.map(p => p.max));
+    const step = top <= 10 ? 2 : top <= 25 ? 5 : top <= 50 ? 10 : 20;
+    const yMax = Math.ceil(top / step) * step;
+    const x = t => L + (t - tStart) / span * (W - L - R);
+    const y = v => T + (1 - v / yMax) * (H - T - B);
+    layout = { x, W, T, B, H };
+
+    for (let v = 0; v <= yMax; v += step) {
+      svgEl("line", { x1: L, x2: W - R, y1: y(v), y2: y(v), class: "grid-line" }, chartEl);
+      svgEl("text", { x: L - 5, y: y(v) + 3, "text-anchor": "end", class: "axis-text" }, chartEl).textContent = v;
+    }
+
+    // Tacche dell'asse dei tempi, in base al periodo
+    const ticks = [];
+    const d = new Date(tStart * 1000);
+    if (range === "1h") {
+      d.setSeconds(0, 0);
+      d.setMinutes(Math.ceil(d.getMinutes() / 10) * 10);
+      for (; d / 1000 <= tEnd; d.setMinutes(d.getMinutes() + 10))
+        ticks.push([d / 1000, pad2(d.getHours()) + ":" + pad2(d.getMinutes())]);
+    } else if (range === "24h") {
+      d.setMinutes(0, 0, 0);
+      for (; d / 1000 <= tEnd; d.setHours(d.getHours() + 1))
+        if (d.getHours() % 3 === 0) ticks.push([d / 1000, pad2(d.getHours())]);
+    } else if (range === "7d") {
+      d.setHours(0, 0, 0, 0);
+      for (; d / 1000 <= tEnd; d.setDate(d.getDate() + 1)) ticks.push([d / 1000, DAYS[d.getDay()] + " " + d.getDate()]);
+    } else if (range === "30d") {
+      d.setHours(0, 0, 0, 0);
+      const every = W < 500 ? 7 : 5;
+      for (let i = 0; d / 1000 <= tEnd; d.setDate(d.getDate() + 1), i++)
+        if (i % every === 0) ticks.push([d / 1000, d.getDate() + " " + MONTHS[d.getMonth()]]);
+    } else {
+      d.setHours(0, 0, 0, 0); d.setDate(1);
+      const every = W < 500 ? 2 : 1;
+      for (let i = 0; d / 1000 <= tEnd; d.setMonth(d.getMonth() + 1), i++)
+        if (i % every === 0) ticks.push([d / 1000, MONTHS[d.getMonth()]]);
+    }
+    for (const [t, text] of ticks) {
+      if (t < tStart) continue;
+      svgEl("line", { x1: x(t), x2: x(t), y1: T, y2: H - B, class: "grid-line" }, chartEl);
+      svgEl("text", { x: x(t), y: H - B + 13, "text-anchor": "middle", class: "axis-text" }, chartEl).textContent = text;
+    }
+
+    // Linee spezzate dove mancano dati per più di due finestre e mezza
+    const gap = data.window * 2.5;
+    const path = key => {
+      let s = "", prev = null;
+      for (const p of points) {
+        s += (prev === null || p.t - prev > gap ? "M" : "L") + x(p.t).toFixed(1) + "," + y(p[key]).toFixed(1);
+        prev = p.t;
+      }
+      return s;
+    };
+    svgEl("path", { d: path("max"),  class: "max"  }, chartEl);
+    svgEl("path", { d: path("mean"), class: "mean" }, chartEl);
+
+    // Circa una freccia ogni 22 px; su un'ora una per ogni punto
+    const arrowY = H - 14, minDt = range === "1h" ? 0 : span * 22 / (W - L - R);
+    let last = -Infinity;
+    for (const p of points) {
+      if (p.t - last < minDt) continue;
+      last = p.t;
+      const g = svgEl("g", { transform: "translate(" + x(p.t).toFixed(1) + "," + arrowY +
+                              ") rotate(" + ((p.dir + 180) % 360) + ")" }, chartEl);
+      svgEl("polygon", { points: "0,-7 4,5 0,2 -4,5", class: "arrow" }, g);
+    }
+
+    svgEl("line", { id: "cursor", x1: 0, x2: 0, y1: T, y2: H - B, class: "cursor", visibility: "hidden" }, chartEl);
+  }
+
+  function showPoint(evt) {
+    if (!layout) return;
+    const points = data.points;
+    const rect = chartEl.getBoundingClientRect();
+    const px = (evt.clientX - rect.left) * layout.W / rect.width;
+    let best = points[0];
+    for (const p of points) {
+      if (Math.abs(layout.x(p.t) - px) < Math.abs(layout.x(best.t) - px)) best = p;
+    }
+    const cursor = document.getElementById("cursor");
+    cursor.setAttribute("x1", layout.x(best.t));
+    cursor.setAttribute("x2", layout.x(best.t));
+    cursor.setAttribute("visibility", "visible");
+    chartInfoEl.textContent = pointLabel(best.t) + "  media " + best.mean.toFixed(1) +
+      "  max " + best.max.toFixed(1) + " kn  " + best.dir + "° " + windName(best.dir);
+  }
+
+  function hidePoint() {
+    chartInfoEl.textContent = "";
+    const cursor = document.getElementById("cursor");
+    if (cursor) cursor.setAttribute("visibility", "hidden");
+  }
+
+  chartEl.addEventListener("pointermove", showPoint);
+  chartEl.addEventListener("pointerdown", showPoint);
+  chartEl.addEventListener("pointerleave", hidePoint);
+
+  // ── Caricamento ────────────────────────────────────────
+  async function load() {
+    if (!station) return;
+    const id = ++requestId;
+    document.getElementById("chartTitle").textContent = RANGES[range].title;
+    chartMsgEl.style.display = "block";
+    chartMsgEl.textContent = "Caricamento...";
+    try {
+      const resp = await fetch("api/history?station=" + encodeURIComponent(station) + "&range=" + range,
+                               { cache: "no-cache" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const json = await resp.json();
+      if (id !== requestId) return;  // nel frattempo è stato scelto altro
+      data = json;
+      chartMsgEl.style.display = data.points.length ? "none" : "block";
+      chartMsgEl.textContent = "Nessun dato in questo periodo";
+    } catch (e) {
+      if (id !== requestId) return;
+      data = null;
+      chartMsgEl.textContent = "Storico non disponibile (" + e.message + ")";
+    }
+    summarize(data ? data.points : []);
+    drawChart();
+    hidePoint();
+  }
+
+  function setRange(r) {
+    range = r;
+    rangeBtns.forEach(b => b.classList.toggle("on", b.dataset.range === r));
+    save("storico.range", r);
+    syncUrl();
+    load();
+  }
+
+  rangeBtns.forEach(b => b.addEventListener("click", () => setRange(b.dataset.range)));
+
+  stationEl.addEventListener("change", () => {
+    station = stationEl.value;
+    save("storico.station", station);
+    syncUrl();
+    load();
+  });
+
+  async function init() {
+    const params = new URLSearchParams(location.search);
+    const wantRange = params.get("range") || saved("storico.range");
+    if (wantRange in RANGES) range = wantRange;
+    rangeBtns.forEach(b => b.classList.toggle("on", b.dataset.range === range));
+
+    let stations = [];
+    try {
+      const resp = await fetch("api/stations", { cache: "no-cache" });
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      stations = (await resp.json()).stations;
+    } catch (e) {
+      stationEl.innerHTML = "<option>Elenco non disponibile</option>";
+      chartMsgEl.textContent = "Elenco stazioni non disponibile (" + e.message + ")";
+      return;
+    }
+    if (!stations.length) {
+      stationEl.innerHTML = "<option>Nessuna stazione</option>";
+      chartMsgEl.textContent = "Nessuna stazione nell'ultimo anno";
+      return;
+    }
+
+    stationEl.textContent = "";
+    for (const name of stations) {
+      const opt = document.createElement("option");
+      opt.value = opt.textContent = name;
+      stationEl.appendChild(opt);
+    }
+    const want = params.get("station") || saved("storico.station");
+    station = stations.includes(want) ? want : stations[0];
+    stationEl.value = station;
+    syncUrl();
+    load();
+  }
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => { drawChart(); hidePoint(); }, 150);
+  });
+
+  // I dati arrivano ogni 5 minuti
+  setInterval(load, 5 * 60 * 1000);
+  init();
+</script>
+</body>
+</html>

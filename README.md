@@ -226,6 +226,7 @@ Su InfluxDB il nodo si distingue dal tag `sensor_name`. Se invece compare un alt
 | `server/` | Lo stesso ricevitore in Go, consigliato per il server, con lo script di deploy per Devuan in `server/deploy/`. |
 | `platformio.ini`, `pio_sketch_dir.py` | Compilazione con PlatformIO, un ambiente per ogni sketch. |
 | `webapp.html` | Pagina web che si collega via BLE al sensore e mostra velocità istantanea, media, raffica attuale su 3 s (campo `R`, solo firmware SIM7080), massima del periodo (campo `X`) e direzione. |
+| `storico.html` | Pagina web con lo storico di ogni stazione (1 ora, 24 ore, 7 giorni, 30 giorni, 1 anno), letto da `api/history` del collector Go. |
 | `collector.py` | Ricevitore: legge i messaggi dal nodo Meshtastic collegato via USB e li scrive su InfluxDB. |
 | `ai/` | Prototipo di previsione basato sui dati storici in InfluxDB (pensato per una futura "boa" con pannello solare) e alert Telegram. |
 | `openweather/` | Modelli di previsione basati sui dati storici di OpenWeather One Call 3.0, uno per spot (Trevignano, Anzio). |
@@ -543,6 +544,18 @@ Sul monitor seriale un ciclo riuscito mostra `SIM7080: connesso`, poi `CoAP invi
 - **Binario unico:** è statico, quindi sul server non servono Python né librerie.
 - **InfluxDB fermo:** i punti restano in memoria con il loro orario e vengono riscritti quando torna raggiungibile. La coda contiene 2048 punti, circa una settimana per una stazione; a coda piena si perdono i più vecchi. Se il server viene fermato mentre InfluxDB è irraggiungibile, i punti in coda vanno persi.
 - **Autenticazione:** come la versione Python, verifica firma e ora, con `STATION_KEYS` e `STATE_FILE`.
+- **Storico per le pagine web:** con `HTTP_ADDR` (es. `127.0.0.1:8080`) risponde a:
+  - `GET /api/stations`: le stazioni con dati nell'ultimo anno, `{"stations":[...]}`;
+  - `GET /api/history?station=nome&range=1h|24h|7d|30d|365d` (predefinito `24h`): `{"station":..., "range":..., "window":secondi, "points":[{"t":unix,"mean":kn,"max":kn,"dir":gradi}]}`. I report sono raggruppati in finestre di 5 min (1 ora e 24 ore), 30 min, 2 h o 1 giorno: media delle medie, massimo delle raffiche, direzione media calcolata come vettore. `t` è la fine della finestra.
+
+  Le risposte restano in cache 1 minuto (l'elenco 5 minuti). Legge da InfluxDB con lo stesso token, che non arriva mai al browser. Va ascoltato solo in locale e pubblicato da nginx:
+
+  ```nginx
+  location /api/ {
+      proxy_pass http://127.0.0.1:8080;
+      proxy_set_header Host $host;
+  }
+  ```
 
 Serve Go 1.22 o più recente sul computer da cui si fa il deploy. Il token non compare mai sulla riga di comando del processo.
 
@@ -587,6 +600,10 @@ go test ./...
 ## Web app BLE
 
 `webapp.html` è una pagina statica senza dipendenze. Va aperta in un browser con supporto **Web Bluetooth** (Chrome/Edge su Android o desktop; non Safari su iOS) e servita da `https://` o `localhost`. Premendo *Connetti* cerca il dispositivo `WindSensor`, legge la caratteristica una volta al secondo e mostra i valori.
+
+Mostra anche una rosa dei venti con i nomi dei venti (l'ago punta da dove arriva il vento) e, se servita dallo stesso server del collector Go, il grafico delle ultime 24 ore (media, raffica massima e frecce di direzione) letto da `api/history`. Senza Bluetooth la rosa indica la direzione dell'ultimo invio. Il nome della stazione è la costante `STATION` nella pagina.
+
+`storico.html` mostra lo storico di tutte le stazioni: si sceglie la stazione dalla tendina e il periodo (1 ora, 24 ore, 7 giorni, 30 giorni, 1 anno). Per il periodo scelto riporta media, raffica massima con data e direzione media (pesata sulla velocità), più il grafico con media, raffica e frecce di direzione. Indirizzo condivisibile: `storico.html?station=nome&range=7d`. Va servita insieme a `webapp.html`, sullo stesso server di `/api/`.
 
 ## Collector (Meshtastic → InfluxDB)
 
