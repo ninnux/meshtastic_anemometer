@@ -221,6 +221,7 @@ Su InfluxDB il nodo si distingue dal tag `sensor_name`. Se invece compare un alt
 | `anemometro_bluetooth_stringaunica/` | Firmware base: velocità + direzione dalla banderuola, invio Meshtastic + BLE. |
 | `meshtastic_davis_anemometer_compensated/` | Firmware per XIAO nRF52840 **Sense**: aggiunge bussola QMC5883L + IMU LSM6DS3 per compensare la direzione con l'orientamento del dispositivo (tilt-compensated heading). Sperimentale. |
 | `anemometro_sim7080_coap/` | Firmware con modem **SIM7080G** al posto del nodo Meshtastic: invio CoAP ogni 5 minuti su rete cellulare, modem in PSM tra un invio e l'altro, BLE invariato. |
+| `3dparts/` | Stazione stampata in 3D (anemometro a coppe + banderuola in linea, da infilare sul palo Ø32): script Python parametrici, STL pronti in `3dparts/stl/` e istruzioni di stampa e montaggio nel suo README. |
 | `sim7080_serial_bridge/` | Convertitore USB-seriale per provare a mano il modem con i comandi AT. |
 | `collector_coap.py` | Ricevitore CoAP del firmware SIM7080 in Python: scrive su InfluxDB. |
 | `server/` | Lo stesso ricevitore in Go, consigliato per il server, con lo script di deploy per Devuan in `server/deploy/`. |
