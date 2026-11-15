@@ -19,10 +19,14 @@ type Report struct {
 	Direction int
 	// MeasuredAt è la fine del periodo di misura, secondo l'orologio della stazione.
 	MeasuredAt time.Time
+	// Posizione GNSS, presente solo nel messaggio dopo una nuova lettura (circa una volta a settimana).
+	HasPosition bool
+	Lat, Lon    float64
 }
 
 // ParseReport valida il payload JSON {"id":..., "mean":..., "max":..., "dir":..., "n":...},
-// dove n è l'ora Unix di misura. Firma e ora vengono controllate da Auth.
+// dove n è l'ora Unix di misura, con "lat" e "lon" facoltativi (sempre in coppia).
+// Firma e ora vengono controllate da Auth.
 func ParseReport(payload []byte) (Report, uint32, error) {
 	var raw struct {
 		ID   *string  `json:"id"`
@@ -30,6 +34,8 @@ func ParseReport(payload []byte) (Report, uint32, error) {
 		Max  *float64 `json:"max"`
 		Dir  *int     `json:"dir"`
 		N    *uint32  `json:"n"`
+		Lat  *float64 `json:"lat"`
+		Lon  *float64 `json:"lon"`
 	}
 	if err := json.Unmarshal(payload, &raw); err != nil {
 		return Report{}, 0, err
@@ -46,22 +52,41 @@ func ParseReport(payload []byte) (Report, uint32, error) {
 	if *raw.Dir < 0 || *raw.Dir > 360 {
 		return Report{}, 0, errors.New("direzione fuori intervallo")
 	}
-	return Report{
+	report := Report{
 		Name:       *raw.ID,
 		Mean:       *raw.Mean,
 		Max:        *raw.Max,
 		Direction:  *raw.Dir,
 		MeasuredAt: time.Unix(int64(*raw.N), 0),
-	}, *raw.N, nil
+	}
+	if (raw.Lat == nil) != (raw.Lon == nil) {
+		return Report{}, 0, errors.New("posizione incompleta")
+	}
+	if raw.Lat != nil {
+		if *raw.Lat < -90 || *raw.Lat > 90 || *raw.Lon < -180 || *raw.Lon > 180 {
+			return Report{}, 0, errors.New("posizione fuori intervallo")
+		}
+		report.HasPosition, report.Lat, report.Lon = true, *raw.Lat, *raw.Lon
+	}
+	return report, *raw.N, nil
 }
 
 // LineProtocol scrive lo stesso formato di collector_coap.py, con l'orario in secondi.
+// Con la posizione aggiunge una seconda riga nella measurement position.
 // Il nome non richiede escape: namePattern ammette solo caratteri sicuri.
 func (r Report) LineProtocol() string {
-	return fmt.Sprintf("meteo,sensor_name=%s wind_mean=%s,wind_max=%s,direction_deg=%di %d",
+	line := fmt.Sprintf("meteo,sensor_name=%s wind_mean=%s,wind_max=%s,direction_deg=%di %d",
 		r.Name,
 		strconv.FormatFloat(r.Mean, 'f', -1, 64),
 		strconv.FormatFloat(r.Max, 'f', -1, 64),
 		r.Direction,
 		r.MeasuredAt.Unix())
+	if r.HasPosition {
+		line += fmt.Sprintf("\nposition,sensor_name=%s lat=%s,lon=%s %d",
+			r.Name,
+			strconv.FormatFloat(r.Lat, 'f', -1, 64),
+			strconv.FormatFloat(r.Lon, 'f', -1, 64),
+			r.MeasuredAt.Unix())
+	}
+	return line
 }

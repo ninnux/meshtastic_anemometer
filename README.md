@@ -323,6 +323,20 @@ Il messaggio è un CoAP POST su `coap://<server>:5683/wind`, con Content-Format 
 
 `id` è `NODE_NAME` e il ricevitore lo salva come tag `sensor_name`. `n` è l'ora Unix di fine misura e, con `sig`, serve all'autenticazione. Il messaggio è di circa 155 byte con le intestazioni IP/UDP, quindi circa 1,3 MB al mese, escluse la segnalazione di rete e l'overhead dell'operatore.
 
+#### Posizione GNSS
+
+La stazione legge la posizione con il GNSS del SIM7080G (serve l'antenna GNSS collegata): la prima volta dopo il primo invio, poi una volta a settimana. Se non trova il fix entro 3 minuti riprova dopo un giorno. Siccome GNSS e rete cellulare condividono la radio, durante la ricerca la radio cellulare è spenta (`AT+CFUN=0`) e viene riaccesa subito dopo.
+
+La posizione va solo nel messaggio successivo alla lettura, con i campi `lat` e `lon` (gradi, 5 decimali, circa 1 m) prima di `sig`:
+
+```json
+{"id":"first_anemometer","mean":10.8,"max":15.1,"dir":225,"n":1793865182,"lat":41.89123,"lon":12.49234,"sig":"..."}
+```
+
+Il collector Go la salva nella measurement `position` (campi `lat`, `lon`, tag `sensor_name`); `collector_coap.py` la ignora.
+
+Consumi stimati, con circa 30 mA a GNSS acceso: 0,5 mAh per una ricerca tipica di 60 s, al massimo circa 1,5 mAh se scade il tempo. Traffico: 31 byte in più a settimana.
+
 #### Autenticazione
 
 Ogni messaggio è firmato con **HMAC-SHA256**, troncato a 128 bit, e ogni stazione ha la sua chiave. Il ricevitore accetta solo messaggi con firma valida, con `n` più alto dell'ultimo visto per quella stazione e con un'ora recente: non più vecchia di 15 minuti e non più avanti di 2 minuti rispetto all'ora del server.

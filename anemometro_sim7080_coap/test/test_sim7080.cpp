@@ -50,6 +50,9 @@ public:
   int garbledBandReads = 0;  // risposte ad AT+CBANDCFG? con caratteri persi
   bool cmnbWriteFails = false;
   bool radioOn = true;
+  bool gnssOn = false;
+  int gnssFixAfter = 0;   // risposte senza fix prima della posizione; -1 mai
+  int gnssPolls = 0;
   std::string muteAt;  // da questo comando in poi non risponde finche' non si spegne
   bool muted = false;
   uint32_t shutdownMs = 0;  // dopo l'impulso risponde ancora per questo tempo
@@ -219,6 +222,14 @@ private:
       rx += "\r\nOK\r\n\r\n" + result + "\r\n";
     } else if (c == "AT+CCLK?") {
       rx += "\r\n+CCLK: " + clock + "\r\n\r\nOK\r\n";
+    } else if (c == "AT+CGNSPWR=1" || c == "AT+CGNSPWR=0") {
+      gnssOn = c.back() == '1';
+      rx += "\r\nOK\r\n";
+    } else if (c == "AT+CGNSINF") {
+      // Come sul modem vero il GNSS riceve solo con la radio cellulare spenta
+      bool fix = gnssOn && !radioOn && gnssFixAfter >= 0 && gnssPolls++ >= gnssFixAfter;
+      rx += fix ? "\r\n+CGNSINF: 1,1,20261115140000.000,41.891230,12.492340,52.1,0.00,0.0,1,,1.2,1.5,0.9,,10,6,,,42,,\r\n\r\nOK\r\n"
+                : std::string("\r\n+CGNSINF: ") + (gnssOn ? "1" : "0") + ",0,,,,,,,0,,,,,,0,0,,,,,\r\n\r\nOK\r\n";
     } else if (c.rfind("AT+CRAI=", 0) == 0) {
       rx += raiSupported ? "\r\nOK\r\n" : "\r\nERROR\r\n";
     } else if (c == "AT+CCOAPACTION") {
@@ -864,6 +875,84 @@ static void testPayloadWorstCaseFitsSketchBuffer() {
   CHECK(formatSignedWindPayload(buf, sizeof(buf), "first_anemometer", worst, 0xFFFFFFFF, TEST_KEY));
 }
 
+static void testPayloadWithPosition() {
+  const WindReport worst = {999.9f, 999.9f, 359, 0};
+  const GnssPosition far = {-89.99999f, -179.99999f};
+  char buf[160];
+  CHECK(formatSignedWindPayload(buf, sizeof(buf), "first_anemometer", worst, 0xFFFFFFFF, TEST_KEY, &far));
+  // Il float non rappresenta esattamente tutte le cifre: conta la lunghezza del caso peggiore
+  CHECK(strstr(buf, ",\"lat\":-89.9999") != nullptr && strstr(buf, ",\"lon\":-179.9999") != nullptr);
+  CHECK(strstr(buf, ",\"sig\":\"") > strstr(buf, "\"lon\""));
+
+  // La posizione e' coperta dalla firma
+  const GnssPosition a = {41.89123f, 12.49234f}, b = {41.89124f, 12.49234f};
+  char other[160];
+  CHECK(formatSignedWindPayload(buf, sizeof(buf), "a", SAMPLE_REPORT, 1, TEST_KEY, &a));
+  CHECK(formatSignedWindPayload(other, sizeof(other), "a", SAMPLE_REPORT, 1, TEST_KEY, &b));
+  CHECK(strcmp(strstr(buf, "sig"), strstr(other, "sig")) != 0);
+
+  // Troppo lungo con la posizione: rifiutato, non troncato
+  char plain[160];
+  CHECK(formatSignedWindPayload(plain, sizeof(plain), "a", SAMPLE_REPORT, 1, TEST_KEY));
+  CHECK(!formatSignedWindPayload(buf, strlen(plain) + 1, "a", SAMPLE_REPORT, 1, TEST_KEY, &a));
+}
+
+static void testParseGnssInfo() {
+  GnssPosition p = {0, 0};
+  CHECK(parseGnssInfo("1,1,20261115140000.000,41.891230,12.492340,52.1,0.00", p));
+  CHECK(p.lat > 41.8912f && p.lat < 41.8913f && p.lon > 12.4923f && p.lon < 12.4924f);
+  CHECK(parseGnssInfo("1,1,20261115140000.000,-33.5,-70.25,", p) && p.lat == -33.5f && p.lon == -70.25f);
+  CHECK(!parseGnssInfo("1,0,,,,,,,0,,,,,,0,0,,,,,", p));    // in ricerca
+  // Esempio del manuale (8.2.2) senza fix: stato vuoto e coordinate a zero
+  CHECK(!parseGnssInfo("1,,,0.000000,0.000000,-18.000,,,1,,0.1,0.1,0.1,,,,9999000.0,6144.0", p));
+  CHECK(!parseGnssInfo("0,0,,,,,,,0,,,,,,0,0,,,,,", p));    // spento
+  CHECK(!parseGnssInfo("1,1,20261115140000.000,,,", p));     // fix senza coordinate
+  CHECK(!parseGnssInfo("1,1,20261115140000.000,0.0,0.0,", p));
+  CHECK(!parseGnssInfo("1,1,20261115140000.000,91.0,12.0,", p));
+  CHECK(!parseGnssInfo("1,1,20261115140000.000,41.8", p));  // riga troncata
+  CHECK(!parseGnssInfo("1,10,x,41.0,12.0,", p));
+}
+
+static void testGnssFix() {
+  FakeModem m; reset(m);
+  m.gnssFixAfter = 3;
+  Sim7080 modem(m, 1, HIGH);
+  GnssPosition p = {0, 0};
+  CHECK(modem.gnssFix(p, 60000));
+  CHECK(p.lat > 41.8912f && p.lat < 41.8913f && p.lon > 12.4923f && p.lon < 12.4924f);
+  CHECK(m.count("AT+CGNSINF") == 4);
+  // Radio spenta prima del GNSS, GNSS spento e radio riaccesa alla fine
+  auto at = [&](const std::string& c) {
+    return std::find(m.commands.begin(), m.commands.end(), c) - m.commands.begin();
+  };
+  CHECK(at("AT+CFUN=0") < at("AT+CGNSPWR=1"));
+  CHECK(at("AT+CGNSPWR=0") < at("AT+CFUN=1"));
+  CHECK(m.commands.back() == "AT+CFUN=1");
+  CHECK(!m.gnssOn && m.radioOn);
+  CHECK(!modem.connected());
+}
+
+static void testGnssTimeout() {
+  FakeModem m; reset(m);
+  m.gnssFixAfter = -1;
+  Sim7080 modem(m, 1, HIGH);
+  GnssPosition p = {0, 0};
+  CHECK(!modem.gnssFix(p, 60000));
+  CHECK(fakeMillis >= 60000 && fakeMillis < 70000);
+  CHECK(!m.gnssOn && m.radioOn);
+  CHECK(m.commands.back() == "AT+CFUN=1");
+}
+
+// Il modem e' gia' in PSM quando si cerca la posizione: va risvegliato
+static void testGnssWakesFromPsm() {
+  FakeModem m; reset(m);
+  m.enterPsm();
+  Sim7080 modem(m, 1, HIGH);
+  GnssPosition p = {0, 0};
+  CHECK(modem.gnssFix(p, 60000));
+  CHECK(pwrkeyPulses == 1);
+}
+
 static void testPayloadTooLong() {
   char buf[128];
   CHECK(formatSignedWindPayload(buf, sizeof(buf), "a", SAMPLE_REPORT, 1, TEST_KEY));
@@ -1145,6 +1234,11 @@ int main() {
   testSignatureChangesWithEveryField();
   testPayloadWorstCaseFitsSketchBuffer();
   testPayloadTooLong();
+  testPayloadWithPosition();
+  testParseGnssInfo();
+  testGnssFix();
+  testGnssTimeout();
+  testGnssWakesFromPsm();
   testParseModemClock();
   testParseModemClockRejects();
   testClockTimestamps();

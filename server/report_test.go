@@ -40,6 +40,11 @@ func TestParseReportInvalid(t *testing.T) {
 		"dir fuori":          `{"id":"a","mean":1,"max":1,"dir":361,"n":1}`,
 		"dir decimale":       `{"id":"a","mean":1,"max":1,"dir":1.5,"n":1}`,
 		"NaN":                `{"id":"a","mean":NaN,"max":1,"dir":1,"n":1}`,
+		"solo lat":           `{"id":"a","mean":1,"max":1,"dir":1,"n":1,"lat":41.9}`,
+		"solo lon":           `{"id":"a","mean":1,"max":1,"dir":1,"n":1,"lon":12.5}`,
+		"lat fuori":          `{"id":"a","mean":1,"max":1,"dir":1,"n":1,"lat":90.5,"lon":12.5}`,
+		"lon fuori":          `{"id":"a","mean":1,"max":1,"dir":1,"n":1,"lat":41.9,"lon":-180.5}`,
+		"lat testo":          `{"id":"a","mean":1,"max":1,"dir":1,"n":1,"lat":"41.9","lon":12.5}`,
 	}
 	for name, payload := range cases {
 		if _, _, err := ParseReport([]byte(payload)); err == nil {
@@ -56,6 +61,26 @@ func TestParseReportLimits(t *testing.T) {
 		if _, _, err := ParseReport([]byte(payload)); err != nil {
 			t.Errorf("%s: %v", payload, err)
 		}
+	}
+}
+
+func TestParseReportPosition(t *testing.T) {
+	r, _, err := ParseReport([]byte(`{"id":"a","mean":1,"max":2,"dir":3,"n":7,"lat":41.89123,"lon":-12.49234}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.HasPosition || r.Lat != 41.89123 || r.Lon != -12.49234 {
+		t.Fatalf("posizione errata: %+v", r)
+	}
+}
+
+func TestLineProtocolWithPosition(t *testing.T) {
+	r := Report{Name: "s1", Mean: 10.8, Max: 15, Direction: 225, MeasuredAt: time.Unix(1700000000, 0),
+		HasPosition: true, Lat: 41.89123, Lon: 12.49234}
+	want := "meteo,sensor_name=s1 wind_mean=10.8,wind_max=15,direction_deg=225i 1700000000\n" +
+		"position,sensor_name=s1 lat=41.89123,lon=12.49234 1700000000"
+	if got := r.LineProtocol(); got != want {
+		t.Fatalf("\n got %s\nwant %s", got, want)
 	}
 }
 

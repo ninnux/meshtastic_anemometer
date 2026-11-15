@@ -62,6 +62,9 @@ func windHandler(auth *Auth, store func(line string)) mux.HandlerFunc {
 					store(report.LineProtocol())
 				}
 				log.Printf("ricevuto %s: media %gkn max %gkn dir %d", report.Name, report.Mean, report.Max, report.Direction)
+				if report.HasPosition {
+					log.Printf("posizione %s: %g, %g", report.Name, report.Lat, report.Lon)
+				}
 				reply(w, r, codes.Changed)
 				return
 			}

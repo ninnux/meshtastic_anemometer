@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "hmac_sha256.h"
+#include "gnss.h"
 
 #define WIND_SIGNATURE_BYTES 16  // HMAC troncato a 128 bit
 
@@ -50,11 +51,17 @@ private:
 };
 
 // Scrive il payload JSON in out. La firma copre tutti i byte che la precedono.
-// Ritorna false se non entra in cap.
+// Con pos aggiunge "lat" e "lon" (5 decimali, circa 1 m). Ritorna false se non entra in cap.
 inline bool formatSignedWindPayload(char* out, size_t cap, const char* id, const WindReport& r,
-                                    uint32_t unixSeconds, const char* key) {
+                                    uint32_t unixSeconds, const char* key,
+                                    const GnssPosition* pos = nullptr) {
   int written = snprintf(out, cap, "{\"id\":\"%s\",\"mean\":%.1f,\"max\":%.1f,\"dir\":%d,\"n\":%lu",
                          id, r.mean, r.max, r.dir, (unsigned long)unixSeconds);
+  if (pos && written >= 0 && (size_t)written < cap) {
+    int extra = snprintf(out + written, cap - written, ",\"lat\":%.5f,\"lon\":%.5f",
+                         (double)pos->lat, (double)pos->lon);
+    written = extra < 0 ? -1 : written + extra;
+  }
   // ,"sig":" + esadecimale + "} + terminatore
   const size_t tailLen = 8 + WIND_SIGNATURE_BYTES * 2 + 2 + 1;
   if (written < 0 || (size_t)written + tailLen > cap) return false;

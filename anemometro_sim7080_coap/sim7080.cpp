@@ -18,6 +18,7 @@
 #define NTP_ATTEMPTS       3
 #define NTP_RETRY_MS       3000UL    // appena uscito dal PSM il DNS puo' non essere pronto
 #define COAP_ACK_MS        100000UL  // comprende le ritrasmissioni CON del modem
+#define GNSS_POLL_MS       2000UL
 #define POLL_MS            5
 #define FLUSH_MAX_BYTES    2048  // un modem che trasmette senza sosta non blocca il task
 
@@ -160,6 +161,17 @@ bool Sim7080::waitAlive(uint32_t timeoutMs) {
     delay(500);
   }
   return false;
+}
+
+// Accende o risveglia il modem se non risponde
+bool Sim7080::wake() {
+  if (isAlive()) return true;
+  pulsePwrkey();
+  // Se il modem era acceso ma non rispondeva, l'impulso l'ha spento
+  // (NORMAL POWER DOWN): un secondo impulso lo riaccende subito
+  if (waitAlive(BOOT_TIMEOUT_MS)) return true;
+  pulsePwrkey();
+  return waitAlive(BOOT_TIMEOUT_MS);
 }
 
 void Sim7080::pulsePwrkey() {
@@ -324,17 +336,9 @@ bool Sim7080::connectOnce(const char* apn, const char* host, uint16_t port, cons
   _connected = false;
   _silent = false;
 
-  if (!isAlive()) {
-    pulsePwrkey();
-    // Se il modem era acceso ma non rispondeva, l'impulso l'ha spento
-    // (NORMAL POWER DOWN): un secondo impulso lo riaccende subito
-    if (!waitAlive(BOOT_TIMEOUT_MS)) {
-      pulsePwrkey();
-      if (!waitAlive(BOOT_TIMEOUT_MS)) {
-        Log.println("SIM7080: nessuna risposta AT");
-        return false;
-      }
-    }
+  if (!wake()) {
+    Log.println("SIM7080: nessuna risposta AT");
+    return false;
   }
   command("ATE0");
 
@@ -401,6 +405,38 @@ bool Sim7080::syncTime(const char* ntpServer, uint32_t& unixSeconds) {
   sendCmd("AT+CCLK?");
   if (!waitLine("+CCLK:", "OK", 2000)) return false;
   return parseModemClock(_line + strlen("+CCLK:"), unixSeconds);
+}
+
+// ── GNSS ─────────────────────────────────────────────────────
+bool Sim7080::gnssFix(GnssPosition& pos, uint32_t timeoutMs) {
+  _connected = false;
+  if (!wake()) {
+    Log.println("SIM7080: nessuna risposta AT");
+    return false;
+  }
+  command("ATE0");
+
+  // Con la rete attiva il GNSS non riceve: la radio cellulare va spenta
+  command("AT+CFUN=0", CFUN_TIMEOUT_MS);
+  bool fixed = false;
+  if (command("AT+CGNSPWR=1")) {
+    Log.println("SIM7080: GNSS acceso, cerco la posizione");
+    uint32_t start = xTaskGetTickCount();
+    while (xTaskGetTickCount() - start < ms2tick(timeoutMs)) {
+      // Risposta fino a 94 caratteri (manuale 8.2.2): _line puo' troncarne la coda,
+      // ma servono solo i primi cinque campi
+      if (query("AT+CGNSINF", "+CGNSINF:") && parseGnssInfo(_line + strlen("+CGNSINF:"), pos)) {
+        fixed = true;
+        break;
+      }
+      delay(GNSS_POLL_MS);
+    }
+    command("AT+CGNSPWR=0");
+  }
+  // Sempre, anche dopo un errore: con la radio spenta il modem non si registrerebbe piu'
+  command("AT+CFUN=1", CFUN_TIMEOUT_MS);
+  Log.println(fixed ? "SIM7080: posizione trovata" : "SIM7080: posizione non trovata");
+  return fixed;
 }
 
 // ── CoAP ─────────────────────────────────────────────────────

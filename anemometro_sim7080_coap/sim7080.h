@@ -7,6 +7,7 @@
 #pragma once
 
 #include <Arduino.h>
+#include "gnss.h"
 
 class Sim7080 {
 public:
@@ -28,6 +29,11 @@ public:
   // Sincronizza l'ora del modem via NTP e la legge in secondi Unix. Richiede connect().
   bool syncTime(const char* ntpServer, uint32_t& unixSeconds);
 
+  // Accende il GNSS e attende la posizione per al massimo timeoutMs, poi lo spegne.
+  // GNSS e rete cellulare condividono la radio: durante la ricerca la rete e'
+  // spenta, quindi va chiamato dopo l'invio. Il prossimo connect la riaccende.
+  bool gnssFix(GnssPosition& pos, uint32_t timeoutMs);
+
   // Smette di usare il modem, che resta registrato ed entra da solo in PSM
   // quando la rete rilascia la connessione e scade l'active time.
   // Il prossimo connect lo risveglia.
@@ -46,6 +52,7 @@ private:
   bool command(const char* cmd, uint32_t timeoutMs = 2000);
   bool query(const char* cmd, const char* expected, uint32_t timeoutMs = 2000);
   bool isAlive();
+  bool wake();
   bool waitAlive(uint32_t timeoutMs);
   void configurePsm();
   bool configureNetwork(const char* apn, const char* networkMode);

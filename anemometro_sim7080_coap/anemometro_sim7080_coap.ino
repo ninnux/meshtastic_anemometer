@@ -50,6 +50,13 @@
 // restare sveglio per un periodo intero, e all'accensione si vede che funziona
 #define FIRST_REPORT_S  (REPORT_PERIOD_S < 60 ? REPORT_PERIOD_S : 60)
 
+// ── GNSS ─────────────────────────────────────────────────────
+// La posizione si cerca dopo il primo invio e poi una volta a settimana, e va
+// solo nell'invio successivo: in tutti gli altri messaggi non c'e'.
+#define GNSS_PERIOD_S     (7UL * 24 * 3600)
+#define GNSS_RETRY_S      (24UL * 3600)  // senza fix (cielo coperto, antenna): riprova dopo un giorno
+#define GNSS_TIMEOUT_MS   180000UL       // partenza a freddo: di solito 30-60 s a cielo aperto
+
 // ── Watchdog ─────────────────────────────────────────────────
 // Il loop lo ricarica ogni secondo, ma smette se un ciclo del modem dura
 // troppo: la XIAO si riavvia invece di restare ferma per sempre.
@@ -108,6 +115,12 @@ QueueHandle_t     reportQueue;  // un solo elemento: se il modem e' occupato vin
 Sim7080 modem(Serial1, MODEM_PWRKEY_PIN, MODEM_PWRKEY_ACTIVE);
 WindClock windClock;
 
+// Usate solo dal task del modem
+GnssPosition gnssPosition;
+bool     gnssPending  = false;  // posizione nuova da inviare
+bool     gnssTried    = false;
+uint32_t gnssNextTick = 0;
+
 // ── Prototipi ────────────────────────────────────────────────
 void isr_timer_cb(TimerHandle_t xTimerID);
 void isr_rotation();
@@ -116,6 +129,7 @@ int  meanWindDirection();
 void queueReport();
 void modemLoop();
 void runModemCycle(const WindReport& report);
+void runGnssIfDue();
 void startWatchdog();
 void feedWatchdog();
 bool sendReport(const WindReport& report);
@@ -286,7 +300,33 @@ void modemLoop() {
   ModemBusySinceTick = xTaskGetTickCount();
   IsModemBusy = true;
   runModemCycle(report);
+  // Il watchdog conta la ricerca GNSS come un ciclo a parte
+  ModemBusySinceTick = xTaskGetTickCount();
+  runGnssIfDue();
   IsModemBusy = false;
+}
+
+void runGnssIfDue() {
+  uint32_t now = xTaskGetTickCount();
+  // Differenza con segno: funziona anche quando il contatore dei tick si azzera
+  if (gnssTried && (int32_t)(now - gnssNextTick) < 0) return;
+  gnssTried = true;
+
+  Serial1.begin(MODEM_BAUD_RATE);
+  GnssPosition pos;
+  if (modem.gnssFix(pos, GNSS_TIMEOUT_MS)) {
+    gnssPosition = pos;
+    gnssPending  = true;
+    gnssNextTick = now + GNSS_PERIOD_S * WIND_CLOCK_TICK_HZ;  // ms2tick traboccherebbe a 32 bit
+    Log.print("Posizione: ");
+    Log.print(pos.lat, 5);
+    Log.print(", ");
+    Log.println(pos.lon, 5);
+  } else {
+    gnssNextTick = now + GNSS_RETRY_S * WIND_CLOCK_TICK_HZ;
+  }
+  modem.standby();
+  Serial1.end();
 }
 
 // Il modem non viene mai spento: se il ciclo fallisce resta in standby e
@@ -334,15 +374,17 @@ bool sendReport(const WindReport& report) {
   // scambi i messaggi dopo una riaccensione per duplicati di quelli precedenti.
   static uint16_t messageId = (uint16_t)millis();
 
-  char payload[128];
+  char payload[160];
   if (!formatSignedWindPayload(payload, sizeof(payload), NODE_NAME, report,
-                               windClock.timestamp(report.closedTick), STATION_KEY)) {
+                               windClock.timestamp(report.closedTick), STATION_KEY,
+                               gnssPending ? &gnssPosition : nullptr)) {
     Log.println("Report troppo lungo");
     return false;
   }
 
   bool sent = modem.coapPost(messageId++, COAP_PATH, COAP_CONTENT_FORMAT_JSON,
                              payload, COAP_CONFIRMABLE);
+  if (sent) gnssPending = false;
   Log.print(sent ? "CoAP inviato: " : "CoAP non inviato: ");
   Log.println(payload);
   return sent;
