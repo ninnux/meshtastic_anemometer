@@ -405,10 +405,10 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 | `D6` (TX) | RX del modem | UART a 115200 baud |
 | `D7` (RX) | TX del modem | |
 | `D1` | PWRKEY del modem | obbligatorio: serve ad accendere il modem e a risvegliarlo dal PSM |
-| `GND` | massa del modem e dell'alimentazione | massa in comune obbligatoria |
-| `5V` | 5 V dell'alimentazione esterna | sulla scheda provata è servito alimentare la XIAO dagli stessi 5 V del modem |
+| `GND` | massa del modem e dell'alimentazione | massa in comune obbligatoria, con un collegamento buono: se manca o è incerto, il modem si accende ma non risponde ad `AT` |
+| `5V` | 5 V dell'alimentazione esterna | la XIAO si alimenta dal pin `5V` anche senza USB. Collega l’alimentazione con fili corti: dalla batteria prima alla XIAO e poi al modem |
 
-**Scheda provata:** il modulo "universale" con serigrafia SIM800/868, NB-SIM7080, CAT1-A7680X ha il connettore `DTR GND VDD PWRK UTX URX GND`. `VDD` è l'ingresso a 5 V, `URX`/`UTX` lavorano a 3,3 V e vanno direttamente a `D6`/`D7`, `PWRK` va a `D1` (`MODEM_PWRKEY_ACTIVE` `HIGH`), `DTR` resta libero. All'accensione il modem resta spento finché non riceve un impulso su PWRKEY. La UART ha funzionato solo con modem e XIAO alimentati dagli stessi 5 V esterni e massa comune; con il modem alimentato in altro modo si accendeva ma non rispondeva ad `AT`.
+**Scheda provata:** il modulo "universale" con serigrafia SIM800/868, NB-SIM7080, CAT1-A7680X ha il connettore `DTR GND VDD PWRK UTX URX GND`. `VDD` è l'ingresso a 5 V, `URX`/`UTX` lavorano a 3,3 V e vanno direttamente a `D6`/`D7`, `PWRK` va a `D1` (`MODEM_PWRKEY_ACTIVE` `HIGH`), `DTR` resta libero. All'accensione il modem resta spento finché non riceve un impulso su PWRKEY. Modem e XIAO possono avere alimentazioni diverse (per esempio XIAO sulla USB e modem a batteria), purché le masse siano collegate bene: con la massa incerta il modem si accende ma non risponde ad `AT`.
 
 **Prima di dare corrente:**
 
