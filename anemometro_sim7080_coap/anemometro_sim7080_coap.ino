@@ -19,6 +19,10 @@
 // ── Pin ──────────────────────────────────────────────────────
 #define WindSensorPin  2
 #define WindVanePin    A3
+// D8 alimenta il potenziometro solo durante la lettura: acceso sempre consumerebbe
+// 3,3 V / 20 kOhm = 165 uA, circa 4 mAh al giorno
+#define VanePowerPin   D8
+#define VaneSettleUs   200  // il cursore arriva a 5 kOhm di impedenza: margine ampio
 #define VaneOffset     0
 // Magneti sulle coppe: ogni giro chiude il reed una volta per magnete
 #define PulsesPerRotation 2
@@ -106,6 +110,7 @@ uint32_t LastSampleTick = 0;
 float WindDirSinSum     = 0.0f;
 float WindDirCosSum     = 0.0f;
 int   vaneValue         = 0;
+bool  vaneDeadZone      = false;  // cursore nella zona morta del potenziometro
 int   windDirection     = 0;
 int   windCalDirection  = 0;
 char  windCompassDirection[4] = "N";
@@ -172,6 +177,10 @@ void setup() {
   // Il default e' 0-3.6 V: con la banderuola a 3.3 V la lettura si fermerebbe
   // attorno a 330°. Con VDD come riferimento non dipende dalla tensione.
   analogReference(AR_VDD4);
+  // Alta corrente: con la corrente normale l'uscita cederebbe qualche decina di mV
+  // sotto VDD, il riferimento dell'ADC, e gli angoli alti risulterebbero piu' bassi
+  pinMode(VanePowerPin, OUTPUT_H0H1);
+  digitalWrite(VanePowerPin, LOW);
 
   setupBLE();
 
@@ -254,7 +263,7 @@ void loop() {
   Log.print(" Max (kn): ");       Log.print(WindSpeedMax);
   Log.print(" | Dir: ");          Log.print(windCalDirection);
   Log.print("° (");               Log.print(windCompassDirection);
-  Log.println(")");
+  Log.println(vaneDeadZone ? ") zona morta" : ")");
 
   // ── Aggiorna BLE ──────────────────────────────────────────
   if (IsBLEUpdateRequired) {
@@ -563,7 +572,21 @@ void getWindDirection() {
 #ifdef DUMMY_WIND
   vaneValue        = dummyVane(xTaskGetTickCount());
 #else
+  digitalWrite(VanePowerPin, HIGH);
+  delayMicroseconds(VaneSettleUs);
+  analogRead(WindVanePin);  // la prima conversione dopo l'accensione si scarta
   vaneValue        = analogRead(WindVanePin);
+  // Il potenziometro a rotazione continua ha una zona morta vicino al nord, dove il
+  // cursore non tocca la pista: A3 non e' a 0 V ma sale con D8 (visto: 77° fissi).
+  // Con il pull-down interno (circa 13 kOhm) sulla pista la lettura cala al massimo
+  // del 28% (cursore a 5 kOhm), nella zona morta crolla: allora la direzione e' il nord.
+  pinMode(WindVanePin, INPUT_PULLDOWN);
+  delayMicroseconds(VaneSettleUs);
+  int pulledDown   = analogRead(WindVanePin);
+  pinMode(WindVanePin, INPUT);
+  digitalWrite(VanePowerPin, LOW);
+  vaneDeadZone     = pulledDown * 2 < vaneValue;
+  if (vaneDeadZone) vaneValue = 0;
 #endif
   // Scala invertita: con questo potenziometro la tensione scende girando in
   // senso orario, mentre l'angolo deve crescere

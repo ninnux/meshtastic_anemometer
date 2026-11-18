@@ -256,7 +256,7 @@ Gli sketch restano compilabili anche con l'Arduino IDE. PlatformIO usa il BSP Se
 
 - **MCU:** Seeed XIAO nRF52840 (BSP "Seeed nRF52 Boards" ≥ 1.1.0)
 - **Anemometro (coppe):** contatto reed tra `D2` e `GND`, con il pull-up interno della XIAO attivo. Interrupt su fronte di discesa, con debounce software.
-- **Banderuola:** potenziometro su `A3`, mappato linearmente 0–1023 → 360–0°: la scala è invertita perché con il potenziometro montato la tensione scende girando in senso orario.
+- **Banderuola:** potenziometro su `A3`, mappato linearmente 0–1023 → 360–0°: la scala è invertita perché con il potenziometro montato la tensione scende girando in senso orario. Il potenziometro a rotazione continua ha una zona morta vicino al nord, dove il cursore non tocca la pista e `A3` non va a 0 V ma sale con `D8` (visto: 77° fissi invece di 0°). Il firmware SIM7080 la riconosce con una seconda lettura con il pull-down interno di `A3` (circa 13 kΩ): sulla pista la lettura cala al massimo del 28%, nella zona morta crolla, e allora la direzione è il nord. Sul log USB compare "zona morta".
 - **Meshtastic:** modulo/nodo Meshtastic collegato in seriale su `RX=D7`, `TX=D6` a 38400 baud (libreria Arduino `Meshtastic.h`, funzioni `mt_serial_init` / `mt_send_text`). Il nodo deve avere il Serial Module abilitato in modalità protobuf/API.
 - **Solo versione compensata:** bussola QMC5883L (I²C `0x0D`) e IMU LSM6DS3 integrata nella XIAO Sense (I²C `0x6A`).
 
@@ -370,7 +370,7 @@ V[kn]  = V[mph] × 0.868976
 
 #### Lettura della direzione
 
-La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°, quindi **il potenziometro deve essere alimentato dal 3V3 della XIAO**. Con il riferimento predefinito (0–3,6 V) una banderuola a 3,3 V si fermerebbe attorno a 330°. Il firmware base usa ancora quel riferimento.
+La banderuola è letta con riferimento VDD (`AR_VDD4`) sull'intera scala 0–360°, quindi **il potenziometro deve essere alimentato dalla XIAO**: nel firmware SIM7080 da `D8`, acceso solo durante la lettura in modalità ad alta corrente (così la tensione resta vicina a VDD). Con il riferimento predefinito (0–3,6 V) una banderuola a 3,3 V si fermerebbe attorno a 330°. Il firmware base usa ancora quel riferimento.
 
 #### Collegamenti
 
@@ -388,7 +388,7 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
                        │                     │          │             VBAT │◀── alimentazione
                        │                     │          │                  │    separata
  Banderuola            │                     │          │                  │    (+)
-   alimentazione ──────┤ 3V3                 │          │                  │
+   alimentazione ──────┤ D8                  │          │                  │
    cursore ────────────┤ A3                  │          │                  │
    massa ─────────┬────┤ GND                 │     ┌────┤ GND              │
                   │    └─────────────────────┘     │    └──────────────────┘
@@ -400,7 +400,8 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 | XIAO | Collegato a | Note |
 |---|---|---|
 | `D2` | contatto dell'anemometro | l'altro capo va a massa. Il firmware attiva il pull-up interno, quindi non serve una resistenza esterna |
-| `A3` | cursore della banderuola | il potenziometro va tra `3V3` e `GND` della XIAO, perché è letto con riferimento VDD |
+| `A3` | cursore della banderuola | letto con riferimento VDD |
+| `D8` | estremo positivo del potenziometro | il firmware lo accende solo per la lettura (0,2 ms al secondo) invece di tenerlo sempre su `3V3`: si risparmiano 165 µA, circa 4 mAh al giorno. L'altro estremo va a `GND` |
 | `D6` (TX) | RX del modem | UART a 115200 baud |
 | `D7` (RX) | TX del modem | |
 | `D1` | PWRKEY del modem | obbligatorio: serve ad accendere il modem e a risvegliarlo dal PSM |
