@@ -406,13 +406,15 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 | `D7` (RX) | TX del modem | |
 | `D1` | PWRKEY del modem | obbligatorio: serve ad accendere il modem e a risvegliarlo dal PSM |
 | `GND` | massa del modem e dell'alimentazione | massa in comune obbligatoria, con un collegamento buono: se manca o è incerto, il modem si accende ma non risponde ad `AT` |
-| `5V` | 5 V dell'alimentazione esterna | la XIAO si alimenta dal pin `5V` anche senza USB. Collega l’alimentazione con fili corti: dalla batteria prima alla XIAO e poi al modem |
+| `5V` oppure `3V3` | 5 V dell'alimentazione esterna, direttamente o tramite un regolatore a 3,3 V | la XIAO si alimenta dal pin `5V` anche senza USB. In alternativa la si alimenta sul `3V3` con un regolatore LDO a 3,3 V, provato con l'HT7333, mentre il modem resta sui 5 V. Collega l'alimentazione con fili corti: dalla batteria prima alla XIAO e poi al modem |
 
 **Scheda provata:** il modulo "universale" con serigrafia SIM800/868, NB-SIM7080, CAT1-A7680X ha il connettore `DTR GND VDD PWRK UTX URX GND`. `VDD` è l'ingresso a 5 V, `URX`/`UTX` lavorano a 3,3 V e vanno direttamente a `D6`/`D7`, `PWRK` va a `D1` (`MODEM_PWRKEY_ACTIVE` `HIGH`), `DTR` resta libero. All'accensione il modem resta spento finché non riceve un impulso su PWRKEY. Modem e XIAO possono avere alimentazioni diverse (per esempio XIAO sulla USB e modem a batteria), purché le masse siano collegate bene: con la massa incerta il modem si accende ma non risponde ad `AT`.
 
 **Prima di dare corrente:**
 
 - **Alimentazione del modem:** va alimentato a parte, non dal pin 3V3 della XIAO. In trasmissione ha picchi di centinaia di mA, e alcune fonti indicano fino a 2 A, quindi serve un'alimentazione adatta con un condensatore vicino al modulo. Controlla la tensione ammessa sul manuale della tua scheda.
+- **Regolatore per la XIAO:** se alimenti la XIAO sul `3V3` con un LDO come l'HT7333, metti i condensatori indicati nel datasheet, il più vicino possibile al regolatore: 10 µF fra IN e GND e 10 µF fra OUT e GND. Senza condensatori la XIAO funzionava, Bluetooth compreso, ma il modem non rispondeva ad `AT`; con i condensatori gli invii sono regolari. Il tester segnava comunque 3,3 V, quindi non basta misurare la tensione.
+- **Regolatore per la XIAO:** se alimenti la XIAO sul `3V3` con un LDO come l'HT7333, metti i condensatori indicati nel datasheet, il più vicino possibile al regolatore: 10 µF fra IN e GND e 10 µF fra OUT e GND. Senza condensatori la XIAO funzionava, Bluetooth compreso, ma il modem non rispondeva ad `AT`; con i condensatori gli invii sono regolari. Il tester segnava comunque 3,3 V, quindi non basta misurare la tensione.
 - **Livelli logici:** il modulo SIM7080G lavora a 1,8 V, mentre la XIAO lavora a 3,3 V. La scheda provata ha già il traslatore e accetta 3,3 V: controlla la tua. Se non c'è, va aggiunto su RX, TX e PWRKEY.
 - **PWRKEY:** `MODEM_PWRKEY_ACTIVE` è `HIGH` se la scheda ha un transistor sulla linea, `LOW` se il pin è collegato direttamente al modulo.
 - **Antenna e SIM:** non trasmettere senza antenna collegata, e inserisci la SIM a modem spento.
