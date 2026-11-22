@@ -535,6 +535,23 @@ static void testNoNetworkTimesOut() {
   CHECK(fakeMillis >= 180000 && fakeMillis < 200000);
 }
 
+// Senza rete segnale e registrazione finiscono nel log ogni 30 s,
+// mentre una registrazione rapida non aggiunge comandi
+static void testNoNetworkLogsRadioStatus() {
+  FakeModem m; reset(m);
+  m.attachAfterPolls = 1000000;
+  Sim7080 modem(m, 1, HIGH);
+  CHECK(!modem.connect(APN, HOST, 5683));
+  CHECK(m.count("AT+CSQ") >= 4);
+  CHECK(m.count("AT+CSQ") == m.count("AT+CEREG?"));
+
+  FakeModem quick; reset(quick);
+  quick.attachAfterPolls = 2;
+  Sim7080 modem2(quick, 1, HIGH);
+  CHECK(modem2.connect(APN, HOST, 5683));
+  CHECK(quick.count("AT+CSQ") == 0);
+}
+
 // Bloccato nella ricerca della rete: a meta' attesa la radio viene riavviata
 static void testRadioRestartedWhenAttachStuck() {
   FakeModem m; reset(m);
@@ -1254,6 +1271,7 @@ int main() {
   testModemDead();
   testSimNotReady();
   testNoNetworkTimesOut();
+  testNoNetworkLogsRadioStatus();
   testRadioRestartedWhenAttachStuck();
   testRadioRestartedOnce();
   testPostParaErrorMarksDisconnected();

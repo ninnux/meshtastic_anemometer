@@ -56,6 +56,7 @@ private:
   bool isAlive();
   bool wake();
   bool waitAlive(uint32_t timeoutMs);
+  void logRadioStatus();
   void configurePsm();
   bool configureNetwork(const char* apn, const char* networkMode);
   bool waitSimReady(uint32_t timeoutMs);

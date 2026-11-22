@@ -265,6 +265,17 @@ bool Sim7080::waitSimReady(uint32_t timeoutMs) {
   return false;
 }
 
+void Sim7080::logRadioStatus() {
+  if (query("AT+CSQ", "+CSQ:")) {
+    Log.print("SIM7080: segnale ");
+    Log.println(_line);
+  }
+  if (query("AT+CEREG?", "+CEREG:")) {
+    Log.print("SIM7080: registrazione ");
+    Log.println(_line);
+  }
+}
+
 // A volte il modem resta a cercare la rete senza trovarla, mentre dopo un
 // riavvio si registra subito: a meta' attesa la radio viene spenta e
 // riaccesa, e la ricerca riparte da capo.
@@ -280,14 +291,9 @@ bool Sim7080::waitAttach(uint32_t timeoutMs) {
       command("AT+CFUN=1", CFUN_TIMEOUT_MS);
       continue;
     }
-#ifdef SIM7080_TRACE
-    // Ogni 10 s segnale e stato della registrazione: dicono se il modem non
+    // Ogni 30 s segnale e stato della registrazione: dicono se il modem non
     // sente la rete (CSQ 99), la sta cercando (CEREG 2) o e' rifiutato (CEREG 3)
-    if (poll % 5 == 0) {
-      command("AT+CSQ");
-      command("AT+CEREG?");
-    }
-#endif
+    if (poll % 15 == 14) logRadioStatus();
     delay(2000);
   }
   return false;
