@@ -169,8 +169,10 @@ void setup() {
 
   modem.begin();
 
-  // Pull-up interno: senza, il filo del reed raccoglie disturbi e conta impulsi a coppe ferme
-  pinMode(WindSensorPin, INPUT_PULLUP);
+  // Pull-up esterno da 100 kΩ verso 3V3: quello interno (~13 kΩ) con il reed
+  // fermo chiuso consumerebbe ~250 µA. Senza pull-up il filo del reed
+  // raccoglie disturbi e conta impulsi a coppe ferme.
+  pinMode(WindSensorPin, INPUT);
   attachInterrupt(digitalPinToInterrupt(WindSensorPin), isr_rotation, FALLING);
   LastSampleTick = xTaskGetTickCount();
 

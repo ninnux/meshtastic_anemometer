@@ -380,7 +380,7 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
                          Seeed XIAO nRF52840
                        ┌─────────────────────┐
  Anemometro            │                     │            Modem SIM7080G
-   contatto ───────────┤ D2 (pull-up interno)│          ┌──────────────────┐
+   contatto ───────────┤ D2 (pull-up 100k)   │          ┌──────────────────┐
                        │                  D6 ├── TX ───▶│ RX               │
                        │                  D7 │◀── RX ───┤ TX               │
                        │                  D1 ├─────────▶│ PWRKEY           │
@@ -399,7 +399,7 @@ Lo stesso schema vale per il firmware e per il convertitore `sim7080_serial_brid
 
 | XIAO | Collegato a | Note |
 |---|---|---|
-| `D2` | contatto dell'anemometro | l'altro capo va a massa. Il firmware attiva il pull-up interno, quindi non serve una resistenza esterna |
+| `D2` | contatto dell'anemometro | l'altro capo va a massa. Serve un pull-up esterno da 100 kΩ tra `D2` e `3V3`: il firmware non attiva quello interno (~13 kΩ), che con il reed fermo chiuso consumerebbe ~250 µA |
 | `A3` | cursore della banderuola | letto con riferimento VDD |
 | `D8` | estremo positivo del potenziometro | il firmware lo accende solo per la lettura (0,2 ms al secondo) invece di tenerlo sempre su `3V3`: si risparmiano 165 µA, circa 4 mAh al giorno. L'altro estremo va a `GND` |
 | `D6` (TX) | RX del modem | UART a 115200 baud |
