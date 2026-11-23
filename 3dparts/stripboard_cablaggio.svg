@@ -619,14 +619,14 @@
 <line x1="220" y1="180" x2="220" y2="240" stroke="#27ae60" stroke-width="3" stroke-linecap="round"/>
 <circle cx="220" cy="180" r="3" fill="#27ae60" stroke="#fff" stroke-width="1"/>
 <circle cx="220" cy="240" r="3" fill="#27ae60" stroke="#fff" stroke-width="1"/>
-<line x1="220" y1="280" x2="340" y2="280" stroke="#fff" stroke-width="5.5" stroke-linecap="round"/>
-<line x1="220" y1="280" x2="340" y2="280" stroke="#27ae60" stroke-width="3" stroke-linecap="round"/>
+<line x1="220" y1="280" x2="320" y2="280" stroke="#fff" stroke-width="5.5" stroke-linecap="round"/>
+<line x1="220" y1="280" x2="320" y2="280" stroke="#27ae60" stroke-width="3" stroke-linecap="round"/>
 <circle cx="220" cy="280" r="3" fill="#27ae60" stroke="#fff" stroke-width="1"/>
-<circle cx="340" cy="280" r="3" fill="#27ae60" stroke="#fff" stroke-width="1"/>
-<line x1="180" y1="300" x2="320" y2="300" stroke="#fff" stroke-width="5.5" stroke-linecap="round"/>
-<line x1="180" y1="300" x2="320" y2="300" stroke="#2e86de" stroke-width="3" stroke-linecap="round"/>
+<circle cx="320" cy="280" r="3" fill="#27ae60" stroke="#fff" stroke-width="1"/>
+<line x1="180" y1="300" x2="340" y2="300" stroke="#fff" stroke-width="5.5" stroke-linecap="round"/>
+<line x1="180" y1="300" x2="340" y2="300" stroke="#2e86de" stroke-width="3" stroke-linecap="round"/>
 <circle cx="180" cy="300" r="3" fill="#2e86de" stroke="#fff" stroke-width="1"/>
-<circle cx="320" cy="300" r="3" fill="#2e86de" stroke="#fff" stroke-width="1"/>
+<circle cx="340" cy="300" r="3" fill="#2e86de" stroke="#fff" stroke-width="1"/>
 <line x1="80" y1="320" x2="260" y2="320" stroke="#fff" stroke-width="5.5" stroke-linecap="round"/>
 <line x1="80" y1="320" x2="260" y2="320" stroke="#8e44ad" stroke-width="3" stroke-linecap="round"/>
 <circle cx="80" cy="320" r="3" fill="#8e44ad" stroke="#fff" stroke-width="1"/>
@@ -757,9 +757,9 @@
 <text x="30" y="1004" font-size="10" font-weight="bold" fill="#222">C3, C4</text>
 <text x="90" y="1004" font-size="10" fill="#333">C3 10 µF fra G27 (GND) e G29 (OUT) · C4 100 nF fra i binari alti in colonna 30</text>
 <text x="30" y="1022" font-size="10" font-weight="bold" fill="#222">RX</text>
-<text x="90" y="1022" font-size="10" fill="#333">D6: B7 → B14</text>
+<text x="90" y="1022" font-size="10" fill="#333">col. 14 ← D7: J7 → J9, F9 → E9, C9 → C14</text>
 <text x="30" y="1040" font-size="10" font-weight="bold" fill="#222">TX</text>
-<text x="90" y="1040" font-size="10" fill="#333">D7: J7 → J9, F9 → E9, C9 → C15</text>
+<text x="90" y="1040" font-size="10" fill="#333">col. 15 ← D6: B7 → B15 (passa sopra B14 senza toccarlo)</text>
 <text x="30" y="1058" font-size="10" font-weight="bold" fill="#222">PWRK</text>
 <text x="90" y="1058" font-size="10" fill="#333">D1: A2 → A11, D11 → D16</text>
 <text x="30" y="1076" font-size="10" font-weight="bold" fill="#222">VDD</text>
